@@ -14,16 +14,16 @@ const client = new Client({
 });
 
 const cooldowns = {
-  'K!drop': 3600,
-  'K!megadrop': 7200,
-  'K!luckycard': 3600,
-  'K!album drop': 3600,
-  'K!album megadrop': 7200,
-  'K!stamp drop': 3600,
-  'K!rewards': 86400,
-  'K!mine': 3600,
-  'K!fish': 3600,
-  'K!work': 3600
+  'k!drop': 3600,
+  'k!megadrop': 7200,
+  'k!luckycard': 3600,
+  'k!album drop': 3600,
+  'k!album megadrop': 7200,
+  'k!stamp drop': 3600,
+  'k!rewards': 86400,
+  'k!mine': 3600,
+  'k!fish': 3600,
+  'k!work': 3600
 };
 
 const recentEvents = [];
