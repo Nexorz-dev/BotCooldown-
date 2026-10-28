@@ -7,11 +7,15 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.content.pm.PackageManager;
+import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.Gravity;
+import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
@@ -27,11 +31,19 @@ public class MainActivity extends Activity {
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ArrayList<Cooldown> cooldowns = new ArrayList<>();
+
     private LinearLayout timerList;
     private EditText commandInput;
     private EditText minutesInput;
     private NotificationManager notificationManager;
+
     private static final String CHANNEL_ID = "botcooldown_ready";
+    private static final int BG = Color.rgb(4, 9, 12);
+    private static final int CARD = Color.rgb(10, 19, 22);
+    private static final int GREEN = Color.rgb(57, 255, 116);
+    private static final int GOLD = Color.rgb(255, 194, 48);
+    private static final int MUTED = Color.rgb(151, 171, 169);
+    private static final int WHITE = Color.rgb(239, 255, 245);
 
     private static class Cooldown {
         String command;
@@ -49,6 +61,9 @@ public class MainActivity extends Activity {
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        getWindow().setStatusBarColor(BG);
+        getWindow().setNavigationBarColor(BG);
+
         notificationManager =
                 (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
 
@@ -59,63 +74,165 @@ public class MainActivity extends Activity {
         handler.post(tick);
     }
 
+    private int dp(float value) {
+        return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    private GradientDrawable shape(int color, int strokeColor, int radius) {
+        GradientDrawable d = new GradientDrawable();
+        d.setColor(color);
+        d.setCornerRadius(dp(radius));
+        if (strokeColor != Color.TRANSPARENT) {
+            d.setStroke(dp(1), strokeColor);
+        }
+        return d;
+    }
+
+    private TextView text(String value, int size, int color, boolean bold) {
+        TextView t = new TextView(this);
+        t.setText(value);
+        t.setTextSize(size);
+        t.setTextColor(color);
+        if (bold) t.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        return t;
+    }
+
+    private LinearLayout vertical() {
+        LinearLayout l = new LinearLayout(this);
+        l.setOrientation(LinearLayout.VERTICAL);
+        return l;
+    }
+
+    private LinearLayout.LayoutParams params(int width, int height) {
+        return new LinearLayout.LayoutParams(width, height);
+    }
+
     private void buildScreen() {
         ScrollView scroll = new ScrollView(this);
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(40, 36, 40, 32);
-        root.setBackgroundColor(0xFFF5F6FA);
+        scroll.setFillViewport(true);
+        scroll.setBackgroundColor(BG);
 
+        LinearLayout root = vertical();
+        root.setPadding(dp(22), dp(24), dp(22), dp(28));
         scroll.addView(root);
         setContentView(scroll);
 
-        TextView title = new TextView(this);
-        title.setText("BotCooldown");
-        title.setTextSize(30);
-        title.setTypeface(null, Typeface.BOLD);
-        title.setTextColor(0xFF273469);
-        root.addView(title);
+        // Encabezado y moneda dorada
+        LinearLayout header = new LinearLayout(this);
+        header.setGravity(Gravity.CENTER_VERTICAL);
 
-        TextView subtitle = new TextView(this);
-        subtitle.setText("Controla los tiempos de tus comandos");
-        subtitle.setTextSize(15);
-        subtitle.setPadding(0, 8, 0, 24);
-        root.addView(subtitle);
+        TextView coin = text("K", 34, GOLD, true);
+        coin.setGravity(Gravity.CENTER);
+        coin.setBackground(shape(
+                Color.rgb(44, 30, 7), GOLD, 50));
+        coin.setElevation(dp(5));
+        header.addView(coin, params(dp(62), dp(62)));
+
+        LinearLayout brand = vertical();
+        brand.setPadding(dp(14), 0, 0, 0);
+
+        TextView title = text("BotCooldown", 27, WHITE, true);
+        brand.addView(title);
+
+        TextView tagline = text(
+                "Controla. Espera. Automatiza.", 12, MUTED, false);
+        tagline.setPadding(0, dp(4), 0, 0);
+        brand.addView(tagline);
+
+        header.addView(brand, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+
+        root.addView(header);
+
+        TextView status = text(
+                "●  SISTEMA DE TEMPORIZADORES", 11, GREEN, true);
+        status.setPadding(0, dp(30), 0, dp(12));
+        root.addView(status);
+
+        // Formulario
+        LinearLayout form = vertical();
+        form.setPadding(dp(16), dp(16), dp(16), dp(18));
+        form.setBackground(shape(CARD, 0xFF17432A, 18));
+        root.addView(form, params(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        form.addView(text("NUEVO COOLDOWN", 14, GREEN, true));
 
         commandInput = new EditText(this);
         commandInput.setSingleLine(true);
-        commandInput.setHint("Comando, ej. k!daily");
-        root.addView(commandInput, matchWrap());
+        commandInput.setTextColor(WHITE);
+        commandInput.setHintTextColor(MUTED);
+        commandInput.setTextSize(15);
+        commandInput.setHint("Nombre o comando, ej. k!daily");
+        commandInput.setPadding(dp(13), dp(10), dp(13), dp(10));
+        commandInput.setBackground(shape(BG, 0xFF28503A, 12));
+
+        LinearLayout.LayoutParams inputParams = params(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
+        inputParams.topMargin = dp(14);
+        form.addView(commandInput, inputParams);
 
         minutesInput = new EditText(this);
         minutesInput.setSingleLine(true);
         minutesInput.setInputType(2);
-        minutesInput.setHint("Cooldown en minutos");
-        root.addView(minutesInput, matchWrap());
+        minutesInput.setTextColor(WHITE);
+        minutesInput.setHintTextColor(MUTED);
+        minutesInput.setTextSize(15);
+        minutesInput.setHint("Duración en minutos");
+        minutesInput.setPadding(dp(13), dp(10), dp(13), dp(10));
+        minutesInput.setBackground(shape(BG, 0xFF28503A, 12));
+
+        LinearLayout.LayoutParams minutesParams = params(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
+        minutesParams.topMargin = dp(10);
+        form.addView(minutesInput, minutesParams);
 
         Button startButton = new Button(this);
-        startButton.setText("Iniciar cooldown");
-        root.addView(startButton, matchWrap());
+        startButton.setText("＋   INICIAR COOLDOWN");
+        startButton.setTextColor(BG);
+        startButton.setTextSize(14);
+        startButton.setTypeface(null, Typeface.BOLD);
+        startButton.setAllCaps(false);
+        startButton.setBackground(shape(GREEN, GREEN, 14));
 
-        TextView heading = new TextView(this);
-        heading.setText("Tus temporizadores");
-        heading.setTextSize(20);
-        heading.setTypeface(null, Typeface.BOLD);
-        heading.setPadding(0, 28, 0, 12);
-        root.addView(heading);
-
-        timerList = new LinearLayout(this);
-        timerList.setOrientation(LinearLayout.VERTICAL);
-        root.addView(timerList, matchWrap());
+        LinearLayout.LayoutParams buttonParams = params(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(54));
+        buttonParams.topMargin = dp(14);
+        form.addView(startButton, buttonParams);
 
         startButton.setOnClickListener(v -> startCooldown());
-    }
 
-    private LinearLayout.LayoutParams matchWrap() {
-        return new LinearLayout.LayoutParams(
+        // Lista
+        LinearLayout section = new LinearLayout(this);
+        section.setGravity(Gravity.CENTER_VERTICAL);
+        section.setPadding(0, dp(28), 0, dp(14));
+
+        section.addView(text("TUS TEMPORIZADORES", 15, WHITE, true));
+
+        TextView count = text("EN VIVO", 10, GREEN, true);
+        count.setGravity(Gravity.CENTER);
+        count.setPadding(dp(9), dp(5), dp(9), dp(5));
+        count.setBackground(shape(0xFF10291A, 0xFF24643A, 20));
+
+        LinearLayout.LayoutParams countParams =
+                new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT);
+        countParams.leftMargin = dp(10);
+        section.addView(count, countParams);
+        root.addView(section);
+
+        timerList = vertical();
+        root.addView(timerList, params(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-        );
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        TextView footer = text(
+                "Mantén tus tiempos bajo control.", 12, MUTED, false);
+        footer.setGravity(Gravity.CENTER);
+        footer.setPadding(0, dp(24), 0, 0);
+        root.addView(footer);
     }
 
     private void startCooldown() {
@@ -141,15 +258,28 @@ public class MainActivity extends Activity {
                     System.currentTimeMillis() + minutes * 60_000L
             );
 
-            TextView item = new TextView(this);
-            item.setTextSize(16);
-            item.setTextColor(0xFF202333);
-            item.setPadding(16, 18, 16, 18);
-            item.setBackgroundColor(0xFFFFFFFF);
+            LinearLayout card = vertical();
+            card.setPadding(dp(16), dp(15), dp(16), dp(15));
+            card.setBackground(shape(CARD, 0xFF205034, 16));
+
+            LinearLayout.LayoutParams cardParams = params(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            cardParams.bottomMargin = dp(12);
+
+            TextView item = text("", 15, WHITE, true);
+            item.setLineSpacing(dp(5), 1f);
+            card.addView(item);
+
+            TextView hint = text(
+                    "NOTIFICACIÓN AL FINALIZAR ACTIVADA",
+                    10, GREEN, true);
+            hint.setPadding(0, dp(8), 0, 0);
+            card.addView(hint);
 
             cooldown.view = item;
             cooldowns.add(cooldown);
-            timerList.addView(item, matchWrap());
+            timerList.addView(card, cardParams);
 
             commandInput.setText("");
             minutesInput.setText("");
@@ -171,8 +301,8 @@ public class MainActivity extends Activity {
             for (Cooldown cooldown : cooldowns) {
                 if (now >= cooldown.endTime) {
                     cooldown.view.setText(
-                            cooldown.command + "\n¡Disponible!"
-                    );
+                            "✓  " + cooldown.command + "\nDISPONIBLE");
+                    cooldown.view.setTextColor(GREEN);
 
                     if (!cooldown.notified) {
                         cooldown.notified = true;
@@ -203,8 +333,8 @@ public class MainActivity extends Activity {
                     "%02d:%02d", minutes, seconds);
 
         cooldown.view.setText(
-                cooldown.command + "\nTiempo restante: " + time
-        );
+                "◉  " + cooldown.command + "\n" + time + "  ·  TIEMPO RESTANTE");
+        cooldown.view.setTextColor(WHITE);
     }
 
     private void createNotificationChannel() {
@@ -215,8 +345,7 @@ public class MainActivity extends Activity {
                     NotificationManager.IMPORTANCE_DEFAULT
             );
             channel.setDescription(
-                    "Avisos cuando un comando esté disponible"
-            );
+                    "Avisos cuando un comando esté disponible");
             notificationManager.createNotificationChannel(channel);
         }
     }
