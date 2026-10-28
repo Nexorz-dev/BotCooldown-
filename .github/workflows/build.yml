@@ -27,6 +27,9 @@ jobs:
       - name: Preparar Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Instalar SDK de Android
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
       - name: Preparar Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
@@ -41,4 +44,3 @@ jobs:
           name: BotCooldown-APK
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
-          
