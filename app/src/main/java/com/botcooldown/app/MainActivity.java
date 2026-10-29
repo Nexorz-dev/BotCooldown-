@@ -27,6 +27,14 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Locale;
@@ -45,6 +53,9 @@ public class MainActivity extends Activity {
     private NotificationManager notificationManager;
 
     private static final String CHANNEL_ID = "botcooldown_ready";
+    private static final String EVENTS_URL =
+            "https://cooldown-detector.onrender.com/events";
+
     private static final String BG = "#04090C";
     private static final int CARD = 0xFF0A1316;
     private static final int GREEN = 0xFF39FF74;
@@ -84,25 +95,7 @@ public class MainActivity extends Activity {
             long duration = intent.getLongExtra(
                     CooldownSyncService.EXTRA_DURATION, 0L);
 
-            if (command == null || endTime <= System.currentTimeMillis()
-                    || duration <= 0) {
-                return;
-            }
-
-            String eventId = command + ":" + endTime;
-
-            if (!syncedIds.add(eventId)) {
-                return;
-            }
-
-            Cooldown c = new Cooldown(command, duration);
-            c.endTime = endTime;
-            c.eventId = eventId;
-            c.notifyWhenDone = false;
-
-            createCooldownCard(c);
-            cooldowns.add(c);
-            updateCooldown(c);
+            addSyncedCooldown(command, endTime, duration);
         }
     };
 
@@ -120,8 +113,6 @@ public class MainActivity extends Activity {
         requestNotificationPermission();
         buildScreen();
 
-        handler.post(tick);
-
         IntentFilter filter = new IntentFilter(
                 CooldownSyncService.ACTION_COOLDOWN_SYNCED);
 
@@ -131,7 +122,132 @@ public class MainActivity extends Activity {
             registerReceiver(syncReceiver, filter);
         }
 
+        handler.post(tick);
+
+        // Recupera los cooldowns que siguen activos en Render.
+        fetchActiveCooldowns();
+
+        // Mantiene activa la sincronización en segundo plano.
         startCooldownSyncService();
+    }
+
+    private void addSyncedCooldown(
+            String command, long endTime, long duration) {
+
+        if (command == null || command.trim().isEmpty()
+                || endTime <= System.currentTimeMillis()
+                || duration <= 0) {
+            return;
+        }
+
+        String eventId = command + ":" + endTime;
+
+        if (!syncedIds.add(eventId)) {
+            return;
+        }
+
+        Cooldown c = new Cooldown(command, duration);
+        c.endTime = endTime;
+        c.eventId = eventId;
+        c.notifyWhenDone = false;
+
+        createCooldownCard(c);
+        cooldowns.add(c);
+        updateCooldown(c);
+    }
+
+    private void fetchActiveCooldowns() {
+        Thread thread = new Thread(() -> {
+            HttpURLConnection connection = null;
+
+            try {
+                URL url = new URL(EVENTS_URL);
+                connection = (HttpURLConnection) url.openConnection();
+                connection.setRequestMethod("GET");
+                connection.setConnectTimeout(10000);
+                connection.setReadTimeout(10000);
+                connection.setRequestProperty(
+                        "Accept", "application/json");
+
+                int responseCode = connection.getResponseCode();
+
+                if (responseCode != HttpURLConnection.HTTP_OK) {
+                    return;
+                }
+
+                StringBuilder result = new StringBuilder();
+
+                try (InputStream input = connection.getInputStream();
+                     BufferedReader reader = new BufferedReader(
+                             new InputStreamReader(input))) {
+
+                    String line;
+
+                    while ((line = reader.readLine()) != null) {
+                        result.append(line);
+                    }
+                }
+
+                JSONArray events = new JSONArray(result.toString());
+
+                for (int i = 0; i < events.length(); i++) {
+                    JSONObject event = events.getJSONObject(i);
+
+                    String command = event.optString("command", "");
+                    long durationSeconds = event.optLong("duration", 0L);
+                    long startedAt = event.optLong("startedAt", 0L);
+
+                    if (command.trim().isEmpty()
+                            || durationSeconds <= 0
+                            || startedAt <= 0
+                            || durationSeconds > Long.MAX_VALUE / 1000L) {
+                        continue;
+                    }
+
+                    long durationMillis = durationSeconds * 1000L;
+
+                    if (startedAt > Long.MAX_VALUE - durationMillis) {
+                        continue;
+                    }
+
+                    long endTime = startedAt + durationMillis;
+
+                    if (endTime <= System.currentTimeMillis()) {
+                        continue;
+                    }
+
+                    final String savedCommand = command;
+                    final long savedEndTime = endTime;
+                    final long savedDuration = durationMillis;
+
+                    handler.post(() -> {
+                        if (!isFinishing() && !isDestroyed()) {
+                            addSyncedCooldown(
+                                    savedCommand,
+                                    savedEndTime,
+                                    savedDuration);
+                        }
+                    });
+                }
+
+            } catch (Exception e) {
+                handler.post(() -> {
+                    if (!isFinishing() && !isDestroyed()) {
+                        Toast.makeText(
+                                MainActivity.this,
+                                "No se pudieron recuperar los cooldowns",
+                                Toast.LENGTH_SHORT).show();
+                    }
+                });
+            } finally {
+                if (connection != null) {
+                    connection.disconnect();
+                }
+            }
+        });
+
+        thread.setDaemon(true);
+        thread.start();
     }
 
     private void startCooldownSyncService() {
@@ -151,16 +267,19 @@ public class MainActivity extends Activity {
     }
 
     private int dp(float value) {
-        return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+        return (int) (value
+                * getResources().getDisplayMetrics().density + 0.5f);
     }
 
     private GradientDrawable shape(int color, int stroke, int radius) {
         GradientDrawable d = new GradientDrawable();
         d.setColor(color);
         d.setCornerRadius(dp(radius));
+
         if (stroke != Color.TRANSPARENT) {
             d.setStroke(dp(1), stroke);
         }
+
         return d;
     }
 
@@ -169,9 +288,11 @@ public class MainActivity extends Activity {
         t.setText(value);
         t.setTextSize(size);
         t.setTextColor(color);
+
         if (bold) {
             t.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         }
+
         return t;
     }
 
@@ -260,7 +381,7 @@ public class MainActivity extends Activity {
         root.addView(timerList, params(-1, -2));
 
         TextView footer = text(
-                "Los cooldowns de Render aparecerán aquí mientras la aplicación esté abierta.",
+                "Los cooldowns activos se recuperan desde Render al abrir la aplicación.",
                 12, MUTED, false);
         footer.setGravity(Gravity.CENTER);
         footer.setPadding(0, dp(24), 0, 0);
@@ -291,8 +412,8 @@ public class MainActivity extends Activity {
         String minText = minutesInput.getText().toString().trim();
         String secText = secondsInput.getText().toString().trim();
 
-        if (command.isEmpty() ||
-                (minText.isEmpty() && secText.isEmpty())) {
+        if (command.isEmpty()
+                || (minText.isEmpty() && secText.isEmpty())) {
             Toast.makeText(this,
                     "Escribe el comando y la duración",
                     Toast.LENGTH_SHORT).show();
@@ -300,11 +421,14 @@ public class MainActivity extends Activity {
         }
 
         try {
-            long minutes = minText.isEmpty() ? 0 : Long.parseLong(minText);
-            long seconds = secText.isEmpty() ? 0 : Long.parseLong(secText);
+            long minutes = minText.isEmpty()
+                    ? 0 : Long.parseLong(minText);
+            long seconds = secText.isEmpty()
+                    ? 0 : Long.parseLong(secText);
 
-            if (minutes < 0 || seconds < 0 || seconds > 59 ||
-                    minutes > 1000000 || (minutes == 0 && seconds == 0)) {
+            if (minutes < 0 || seconds < 0 || seconds > 59
+                    || minutes > 1000000
+                    || (minutes == 0 && seconds == 0)) {
                 throw new NumberFormatException();
             }
 
@@ -383,6 +507,11 @@ public class MainActivity extends Activity {
 
         delete.setOnClickListener(v -> {
             cooldowns.remove(c);
+
+            if (c.eventId != null) {
+                syncedIds.remove(c.eventId);
+            }
+
             timerList.removeView(c.card);
         });
     }
@@ -449,9 +578,9 @@ public class MainActivity extends Activity {
     }
 
     private void requestNotificationPermission() {
-        if (Build.VERSION.SDK_INT >= 33 &&
-                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
-                        != PackageManager.PERMISSION_GRANTED) {
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(
                     new String[]{Manifest.permission.POST_NOTIFICATIONS},
                     100);
@@ -459,9 +588,9 @@ public class MainActivity extends Activity {
     }
 
     private void sendReadyNotification(String command) {
-        if (Build.VERSION.SDK_INT >= 33 &&
-                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
-                        != PackageManager.PERMISSION_GRANTED) {
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
             return;
         }
 
