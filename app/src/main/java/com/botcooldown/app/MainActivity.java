@@ -4,7 +4,6 @@ package com.botcooldown.app;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlarmManager;
-import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
@@ -12,14 +11,17 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
 import android.view.Gravity;
 import android.view.ViewGroup;
 import android.widget.Button;
@@ -54,12 +56,17 @@ public class MainActivity extends Activity {
     private EditText secondsInput;
     private NotificationManager notificationManager;
     private AlarmManager alarmManager;
+    private SharedPreferences preferences;
 
     private static int nextAlarmId = 1000;
+    private boolean requestingExactAlarmPermission = false;
 
     private static final String CHANNEL_ID = "botcooldown_ready";
     private static final String EVENTS_URL =
             "https://cooldown-detector.onrender.com/events";
+
+    private static final String PREFS_NAME = "botcooldown_preferences";
+    private static final String PREF_MANUAL_TIMERS = "manual_timers";
 
     private static final String BG = "#04090C";
     private static final int CARD = 0xFF0A1316;
@@ -123,16 +130,21 @@ public class MainActivity extends Activity {
                 (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         alarmManager =
                 (AlarmManager) getSystemService(ALARM_SERVICE);
+        preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
 
         createNotificationChannel();
         requestNotificationPermission();
         buildScreen();
 
+        // Recuperar los temporizadores manuales guardados.
+        restoreManualCooldowns();
+
         IntentFilter filter = new IntentFilter(
                 CooldownSyncService.ACTION_COOLDOWN_SYNCED);
 
         if (Build.VERSION.SDK_INT >= 33) {
-            registerReceiver(syncReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+            registerReceiver(
+                    syncReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
         } else {
             registerReceiver(syncReceiver, filter);
         }
@@ -140,6 +152,24 @@ public class MainActivity extends Activity {
         handler.post(tick);
         fetchActiveCooldowns();
         startCooldownSyncService();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+
+        // Si el usuario acaba de conceder el permiso de alarmas exactas,
+        // programar de nuevo los temporizadores pendientes.
+        if (alarmManager != null && canScheduleExactAlarms()) {
+            requestingExactAlarmPermission = false;
+
+            for (Cooldown c : cooldowns) {
+                if (c.notifyWhenDone
+                        && c.endTime > System.currentTimeMillis()) {
+                    scheduleManualAlarm(c);
+                }
+            }
+        }
     }
 
     private void addSyncedCooldown(
@@ -179,7 +209,8 @@ public class MainActivity extends Activity {
                 connection.setReadTimeout(10000);
                 connection.setRequestProperty("Accept", "application/json");
 
-                if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) {
+                if (connection.getResponseCode()
+                        != HttpURLConnection.HTTP_OK) {
                     return;
                 }
 
@@ -272,10 +303,49 @@ public class MainActivity extends Activity {
         }
     }
 
+    // Comprueba si Android permite programar alarmas exactas.
+    private boolean canScheduleExactAlarms() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            return alarmManager != null
+                    && alarmManager.canScheduleExactAlarms();
+        }
+
+        return true;
+    }
+
+    private void requestExactAlarmPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S
+                || requestingExactAlarmPermission) {
+            return;
+        }
+
+        requestingExactAlarmPermission = true;
+
+        Toast.makeText(
+                this,
+                "Activa el permiso de alarmas exactas para mayor precisión",
+                Toast.LENGTH_LONG).show();
+
+        try {
+            Intent intent = new Intent(
+                    Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM);
+            intent.setData(Uri.parse("package:" + getPackageName()));
+            startActivity(intent);
+        } catch (Exception e) {
+            requestingExactAlarmPermission = false;
+
+            Toast.makeText(
+                    this,
+                    "Activa las alarmas exactas en los ajustes de la app",
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
     private PendingIntent getAlarmPendingIntent(Cooldown c) {
         Intent intent = new Intent(this, CooldownAlarmReceiver.class);
         intent.setAction(CooldownAlarmReceiver.ACTION_READY);
-        intent.putExtra(CooldownAlarmReceiver.EXTRA_COMMAND, c.command);
+        intent.putExtra(
+                CooldownAlarmReceiver.EXTRA_COMMAND, c.command);
 
         int flags = PendingIntent.FLAG_UPDATE_CURRENT;
 
@@ -288,24 +358,58 @@ public class MainActivity extends Activity {
     }
 
     private void scheduleManualAlarm(Cooldown c) {
-        if (!c.notifyWhenDone || alarmManager == null) {
+        if (!c.notifyWhenDone || alarmManager == null
+                || c.endTime <= System.currentTimeMillis()) {
             return;
         }
 
         try {
             PendingIntent pendingIntent = getAlarmPendingIntent(c);
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+                    && canScheduleExactAlarms()) {
+
+                alarmManager.setExactAndAllowWhileIdle(
+                        AlarmManager.RTC_WAKEUP,
+                        c.endTime,
+                        pendingIntent);
+
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+
+                // Alternativa si todavía no se ha concedido el permiso.
                 alarmManager.setAndAllowWhileIdle(
                         AlarmManager.RTC_WAKEUP,
                         c.endTime,
                         pendingIntent);
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    requestExactAlarmPermission();
+                }
+
             } else {
                 alarmManager.set(
                         AlarmManager.RTC_WAKEUP,
                         c.endTime,
                         pendingIntent);
             }
+
+        } catch (SecurityException e) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                requestExactAlarmPermission();
+            }
+
+            try {
+                alarmManager.setAndAllowWhileIdle(
+                        AlarmManager.RTC_WAKEUP,
+                        c.endTime,
+                        getAlarmPendingIntent(c));
+            } catch (Exception ignored) {
+                Toast.makeText(
+                        this,
+                        "No se pudo programar el aviso",
+                        Toast.LENGTH_SHORT).show();
+            }
+
         } catch (Exception e) {
             Toast.makeText(
                     this,
@@ -324,6 +428,94 @@ public class MainActivity extends Activity {
             alarmManager.cancel(pendingIntent);
             pendingIntent.cancel();
         } catch (Exception ignored) {
+        }
+    }
+
+    // Guarda solamente los temporizadores creados manualmente.
+    private void saveManualCooldowns() {
+        if (preferences == null) {
+            return;
+        }
+
+        JSONArray array = new JSONArray();
+
+        try {
+            for (Cooldown c : cooldowns) {
+                if (!c.notifyWhenDone) {
+                    continue;
+                }
+
+                JSONObject item = new JSONObject();
+                item.put("command", c.command);
+                item.put("durationMillis", c.durationMillis);
+                item.put("endTime", c.endTime);
+                item.put("alarmRequestCode", c.alarmRequestCode);
+
+                array.put(item);
+            }
+
+            preferences.edit()
+                    .putString(PREF_MANUAL_TIMERS, array.toString())
+                    .apply();
+
+        } catch (Exception e) {
+            Toast.makeText(
+                    this,
+                    "No se pudieron guardar los temporizadores",
+                    Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    // Recupera los temporizadores manuales al abrir la aplicación.
+    private void restoreManualCooldowns() {
+        String saved = preferences.getString(PREF_MANUAL_TIMERS, "[]");
+
+        try {
+            JSONArray array = new JSONArray(saved);
+
+            for (int i = 0; i < array.length(); i++) {
+                JSONObject item = array.getJSONObject(i);
+
+                String command = item.optString("command", "");
+                long duration = item.optLong("durationMillis", 0L);
+                long endTime = item.optLong("endTime", 0L);
+                int alarmId = item.optInt("alarmRequestCode", 0);
+
+                if (command.trim().isEmpty()
+                        || duration <= 0
+                        || endTime <= 0
+                        || alarmId <= 0) {
+                    continue;
+                }
+
+                Cooldown c = new Cooldown(command, duration);
+                c.endTime = endTime;
+                c.alarmRequestCode = alarmId;
+                c.notifyWhenDone = true;
+
+                // Evita que el siguiente temporizador reutilice un ID guardado.
+                if (alarmId >= nextAlarmId && alarmId < 2000000000) {
+                    nextAlarmId = alarmId + 1;
+                }
+
+                createCooldownCard(c);
+                cooldowns.add(c);
+
+                if (endTime <= System.currentTimeMillis()) {
+                    c.notified = true;
+                    c.view.setText("✓  DISPONIBLE");
+                    c.view.setTextColor(GREEN);
+                } else {
+                    updateCooldown(c);
+                    scheduleManualAlarm(c);
+                }
+            }
+
+        } catch (Exception e) {
+            Toast.makeText(
+                    this,
+                    "No se pudieron recuperar algunos temporizadores",
+                    Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -498,6 +690,8 @@ public class MainActivity extends Activity {
 
             createCooldownCard(c);
             cooldowns.add(c);
+
+            saveManualCooldowns();
             scheduleManualAlarm(c);
             updateCooldown(c);
 
@@ -565,6 +759,8 @@ public class MainActivity extends Activity {
             cancelManualAlarm(c);
             c.endTime = System.currentTimeMillis() + c.durationMillis;
             c.notified = false;
+
+            saveManualCooldowns();
             scheduleManualAlarm(c);
             updateCooldown(c);
         });
@@ -578,6 +774,7 @@ public class MainActivity extends Activity {
             }
 
             timerList.removeView(c.card);
+            saveManualCooldowns();
         });
     }
 
