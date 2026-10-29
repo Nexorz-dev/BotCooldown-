@@ -47,25 +47,98 @@ const cooldowns = {
 
 const recentEvents = [];
 
+
+const pendingAttempts = [];
+const rejectionWindowMs = 15000;
+
+function getMessageText(message) {
+  const embedText = message.embeds
+    .map(embed => [
+      embed.title,
+      embed.description,
+      ...(embed.fields || []).flatMap(field => [
+        field.name,
+        field.value
+      ]),
+      embed.footer?.text
+    ].filter(Boolean).join('\n'))
+    .join('\n');
+
+  return `${message.content || ''}\n${embedText}`.toLowerCase();
+}
+
 client.on('messageCreate', (message) => {
-  if (message.author.bot) return;
+  const text = getMessageText(message);
+
+  if (message.author.bot) {
+    const rejected =
+      text.includes('you already claimed') &&
+      text.includes('you can claim it again in:');
+
+    if (rejected) {
+      const index = pendingAttempts.findLastIndex(
+        attempt =>
+          attempt.channelId === message.channelId &&
+          Date.now() - attempt.startedAt < rejectionWindowMs
+      );
+
+      if (index !== -1) {
+        const [attempt] = pendingAttempts.splice(index, 1);
+        clearTimeout(attempt.timeout);
+
+        console.log(
+          `Cooldown rechazado para ${attempt.command}. No se registra el uso.`
+        );
+      } else {
+        console.log(
+          'KBOT indicó cooldown, pero no se encontró un comando pendiente.'
+        );
+      }
+    }
+
+    return;
+  }
 
   const command = message.content.trim().toLowerCase();
   const duration = cooldowns[command];
 
   if (!duration) return;
 
-  const event = {
+  const attempt = {
     command,
     duration,
-    startedAt: Date.now()
+    startedAt: Date.now(),
+    channelId: message.channelId,
+    timeout: null
   };
 
-  recentEvents.unshift(event);
-  if (recentEvents.length > 50) recentEvents.pop();
+  pendingAttempts.push(attempt);
 
-  console.log(`Detectado ${command} de ${message.author.username}`);
+  console.log(
+    `Comando ${command} pendiente de comprobar la respuesta de KBOT.`
+  );
+
+  attempt.timeout = setTimeout(() => {
+    const index = pendingAttempts.indexOf(attempt);
+
+    if (index === -1) return;
+
+    pendingAttempts.splice(index, 1);
+
+    recentEvents.unshift({
+      command: attempt.command,
+      duration: attempt.duration,
+      startedAt: Date.now()
+    });
+
+    if (recentEvents.length > 50) recentEvents.pop();
+
+    console.log(
+      `Registrado ${attempt.command}: no se detectó respuesta de cooldown.`
+    );
+  }, rejectionWindowMs);
 });
+
 
 app.get('/events', (req, res) => {
   res.json(recentEvents);
