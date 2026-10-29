@@ -3,9 +3,11 @@ package com.botcooldown.app;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlarmManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -51,6 +53,9 @@ public class MainActivity extends Activity {
     private EditText minutesInput;
     private EditText secondsInput;
     private NotificationManager notificationManager;
+    private AlarmManager alarmManager;
+
+    private static int nextAlarmId = 1000;
 
     private static final String CHANNEL_ID = "botcooldown_ready";
     private static final String EVENTS_URL =
@@ -68,6 +73,7 @@ public class MainActivity extends Activity {
         String eventId;
         long endTime;
         long durationMillis;
+        int alarmRequestCode;
         boolean notified = false;
         boolean notifyWhenDone = true;
         TextView view;
@@ -77,6 +83,13 @@ public class MainActivity extends Activity {
             this.command = command;
             this.durationMillis = durationMillis;
             this.endTime = System.currentTimeMillis() + durationMillis;
+
+            synchronized (MainActivity.class) {
+                this.alarmRequestCode = nextAlarmId++;
+                if (nextAlarmId > 2000000000) {
+                    nextAlarmId = 1000;
+                }
+            }
         }
     }
 
@@ -108,6 +121,8 @@ public class MainActivity extends Activity {
 
         notificationManager =
                 (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+        alarmManager =
+                (AlarmManager) getSystemService(ALARM_SERVICE);
 
         createNotificationChannel();
         requestNotificationPermission();
@@ -123,11 +138,7 @@ public class MainActivity extends Activity {
         }
 
         handler.post(tick);
-
-        // Recupera los cooldowns que siguen activos en Render.
         fetchActiveCooldowns();
-
-        // Mantiene activa la sincronización en segundo plano.
         startCooldownSyncService();
     }
 
@@ -166,12 +177,9 @@ public class MainActivity extends Activity {
                 connection.setRequestMethod("GET");
                 connection.setConnectTimeout(10000);
                 connection.setReadTimeout(10000);
-                connection.setRequestProperty(
-                        "Accept", "application/json");
+                connection.setRequestProperty("Accept", "application/json");
 
-                int responseCode = connection.getResponseCode();
-
-                if (responseCode != HttpURLConnection.HTTP_OK) {
+                if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) {
                     return;
                 }
 
@@ -180,9 +188,7 @@ public class MainActivity extends Activity {
                 try (InputStream input = connection.getInputStream();
                      BufferedReader reader = new BufferedReader(
                              new InputStreamReader(input))) {
-
                     String line;
-
                     while ((line = reader.readLine()) != null) {
                         result.append(line);
                     }
@@ -263,6 +269,61 @@ public class MainActivity extends Activity {
             Toast.makeText(this,
                     "No se pudo iniciar la sincronización",
                     Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private PendingIntent getAlarmPendingIntent(Cooldown c) {
+        Intent intent = new Intent(this, CooldownAlarmReceiver.class);
+        intent.setAction(CooldownAlarmReceiver.ACTION_READY);
+        intent.putExtra(CooldownAlarmReceiver.EXTRA_COMMAND, c.command);
+
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            flags |= PendingIntent.FLAG_IMMUTABLE;
+        }
+
+        return PendingIntent.getBroadcast(
+                this, c.alarmRequestCode, intent, flags);
+    }
+
+    private void scheduleManualAlarm(Cooldown c) {
+        if (!c.notifyWhenDone || alarmManager == null) {
+            return;
+        }
+
+        try {
+            PendingIntent pendingIntent = getAlarmPendingIntent(c);
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setAndAllowWhileIdle(
+                        AlarmManager.RTC_WAKEUP,
+                        c.endTime,
+                        pendingIntent);
+            } else {
+                alarmManager.set(
+                        AlarmManager.RTC_WAKEUP,
+                        c.endTime,
+                        pendingIntent);
+            }
+        } catch (Exception e) {
+            Toast.makeText(
+                    this,
+                    "No se pudo programar el aviso",
+                    Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void cancelManualAlarm(Cooldown c) {
+        if (!c.notifyWhenDone || alarmManager == null) {
+            return;
+        }
+
+        try {
+            PendingIntent pendingIntent = getAlarmPendingIntent(c);
+            alarmManager.cancel(pendingIntent);
+            pendingIntent.cancel();
+        } catch (Exception ignored) {
         }
     }
 
@@ -437,6 +498,7 @@ public class MainActivity extends Activity {
 
             createCooldownCard(c);
             cooldowns.add(c);
+            scheduleManualAlarm(c);
             updateCooldown(c);
 
             commandInput.setText("");
@@ -500,12 +562,15 @@ public class MainActivity extends Activity {
         actions.addView(delete, dp2);
 
         reset.setOnClickListener(v -> {
+            cancelManualAlarm(c);
             c.endTime = System.currentTimeMillis() + c.durationMillis;
             c.notified = false;
+            scheduleManualAlarm(c);
             updateCooldown(c);
         });
 
         delete.setOnClickListener(v -> {
+            cancelManualAlarm(c);
             cooldowns.remove(c);
 
             if (c.eventId != null) {
@@ -527,10 +592,6 @@ public class MainActivity extends Activity {
                         c.notified = true;
                         c.view.setText("✓  DISPONIBLE");
                         c.view.setTextColor(GREEN);
-
-                        if (c.notifyWhenDone) {
-                            sendReadyNotification(c.command);
-                        }
                     }
                 } else {
                     updateCooldown(c);
@@ -585,36 +646,6 @@ public class MainActivity extends Activity {
                     new String[]{Manifest.permission.POST_NOTIFICATIONS},
                     100);
         }
-    }
-
-    private void sendReadyNotification(String command) {
-        if (Build.VERSION.SDK_INT >= 33
-                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
-                != PackageManager.PERMISSION_GRANTED) {
-            return;
-        }
-
-        Notification notification;
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            notification = new Notification.Builder(this, CHANNEL_ID)
-                    .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
-                    .setContentTitle("BotCooldown")
-                    .setContentText(command + " ya está disponible")
-                    .setAutoCancel(true)
-                    .build();
-        } else {
-            notification = new Notification.Builder(this)
-                    .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
-                    .setContentTitle("BotCooldown")
-                    .setContentText(command + " ya está disponible")
-                    .setAutoCancel(true)
-                    .build();
-        }
-
-        notificationManager.notify(
-                (int) (System.currentTimeMillis() & 0x7fffffff),
-                notification);
     }
 
     @Override
