@@ -26,10 +26,52 @@ import android.widget.Toast;
 import java.util.ArrayList;
 import java.util.Locale;
 
+import android.content.SharedPreferences;
+import android.util.Log;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+
 public class MainActivity extends Activity {
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ArrayList<Cooldown> cooldowns = new ArrayList<>();
+
+    
+private static final String EVENTS_URL =
+        "https://cooldown-detector.onrender.com/events";
+
+private static final String PREFS_NAME = "botcooldown_sync";
+private static final String PREFS_SEEN_EVENTS = "seen_events";
+
+private final ExecutorService networkExecutor =
+        Executors.newSingleThreadExecutor();
+
+private final Handler syncHandler = new Handler(Looper.getMainLooper());
+
+private final Set<String> seenEvents = new HashSet<>();
+
+private SharedPreferences syncPrefs;
+
+private final Runnable syncRunnable = new Runnable() {
+    @Override
+    public void run() {
+        syncEvents();
+        syncHandler.postDelayed(this, 15000);
+    }
+};
 
     private LinearLayout timerList;
     private EditText commandInput;
@@ -71,10 +113,20 @@ public class MainActivity extends Activity {
                 (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
 
         createNotificationChannel();
-        requestNotificationPermission();
-        buildScreen();
-        handler.post(tick);
-    }
+requestNotificationPermission();
+
+syncPrefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+
+Set<String> savedEvents = syncPrefs.getStringSet(
+        PREFS_SEEN_EVENTS, new HashSet<>());
+
+seenEvents.addAll(savedEvents);
+
+buildScreen();
+
+handler.post(tick);
+syncHandler.post(syncRunnable);
+}
 
     private int dp(float value) {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
@@ -401,8 +453,101 @@ public class MainActivity extends Activity {
     }
 
     @Override
-    protected void onDestroy() {
-        handler.removeCallbacks(tick);
-        super.onDestroy();
+protected void onDestroy() {
+    handler.removeCallbacks(tick);
+    syncHandler.removeCallbacks(syncRunnable);
+    networkExecutor.shutdownNow();
+    super.onDestroy();
+}
+ private void syncEvents() {
+    networkExecutor.execute(() -> {
+        HttpURLConnection connection = null;
+
+        try {
+            URL url = new URL(EVENTS_URL);
+            connection = (HttpURLConnection) url.openConnection();
+            connection.setRequestMethod("GET");
+            connection.setConnectTimeout(10000);
+            connection.setReadTimeout(10000);
+
+            int responseCode = connection.getResponseCode();
+
+            if (responseCode != HttpURLConnection.HTTP_OK) {
+                Log.e("BotCooldown", "Error HTTP: " + responseCode);
+                return;
+            }
+
+            StringBuilder response = new StringBuilder();
+
+            try (InputStream input = connection.getInputStream();
+                 BufferedReader reader = new BufferedReader(
+                         new InputStreamReader(input, StandardCharsets.UTF_8))) {
+
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    response.append(line);
+                }
+            }
+
+            JSONArray events = new JSONArray(response.toString());
+
+            syncHandler.post(() -> processEvents(events));
+
+        } catch (Exception e) {
+            Log.e("BotCooldown", "Error al sincronizar eventos", e);
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
+        }
+    });
+}
+
+private void processEvents(JSONArray events) {
+    long now = System.currentTimeMillis();
+    boolean changed = false;
+
+    for (int i = 0; i < events.length(); i++) {
+        try {
+            JSONObject event = events.getJSONObject(i);
+
+            String command = event.getString("command");
+            long durationSeconds = event.getLong("duration");
+            long startedAt = event.getLong("startedAt");
+
+            String eventId = command + ":" + startedAt;
+
+            if (seenEvents.contains(eventId)) {
+                continue;
+            }
+
+            long durationMillis = durationSeconds * 1000L;
+            long endTime = startedAt + durationMillis;
+
+            seenEvents.add(eventId);
+            changed = true;
+
+            if (endTime <= now || durationSeconds <= 0) {
+                continue;
+            }
+
+            Cooldown cooldown = new Cooldown(command, durationMillis);
+            cooldown.endTime = endTime;
+
+            createCooldownCard(cooldown);
+            cooldowns.add(cooldown);
+            updateCooldown(cooldown);
+
+        } catch (Exception e) {
+            Log.e("BotCooldown", "No se pudo procesar un evento", e);
+        }
     }
+
+    if (changed) {
+        syncPrefs.edit().putStringSet(
+                PREFS_SEEN_EVENTS,
+                new HashSet<>(seenEvents)
+        ).apply();
+    }
+}   
 }
