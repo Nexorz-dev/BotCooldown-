@@ -6,6 +6,8 @@ import android.app.Activity;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
+import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -14,6 +16,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.ViewGroup;
 import android.widget.Button;
@@ -22,12 +25,6 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
-
-import java.util.ArrayList;
-import java.util.Locale;
-
-import android.content.SharedPreferences;
-import android.util.Log;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -38,40 +35,31 @@ import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-
 public class MainActivity extends Activity {
 
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private final Handler syncHandler = new Handler(Looper.getMainLooper());
+
     private final ArrayList<Cooldown> cooldowns = new ArrayList<>();
+    private final Set<String> seenEvents = new HashSet<>();
 
-    
-private static final String EVENTS_URL =
-        "https://cooldown-detector.onrender.com/events";
+    private static final String EVENTS_URL =
+            "https://cooldown-detector.onrender.com/events";
 
-private static final String PREFS_NAME = "botcooldown_sync";
-private static final String PREFS_SEEN_EVENTS = "seen_events";
+    private static final String PREFS_NAME = "botcooldown_sync";
+    private static final String PREFS_SEEN_EVENTS = "seen_events";
 
-private final ExecutorService networkExecutor =
-        Executors.newSingleThreadExecutor();
+    private final ExecutorService networkExecutor =
+            Executors.newSingleThreadExecutor();
 
-private final Handler syncHandler = new Handler(Looper.getMainLooper());
-
-private final Set<String> seenEvents = new HashSet<>();
-
-private SharedPreferences syncPrefs;
-
-private final Runnable syncRunnable = new Runnable() {
-    @Override
-    public void run() {
-        syncEvents();
-        syncHandler.postDelayed(this, 15000);
-    }
-};
+    private SharedPreferences syncPrefs;
 
     private LinearLayout timerList;
     private EditText commandInput;
@@ -102,6 +90,14 @@ private final Runnable syncRunnable = new Runnable() {
         }
     }
 
+    private final Runnable syncRunnable = new Runnable() {
+        @Override
+        public void run() {
+            syncEvents();
+            syncHandler.postDelayed(this, 15000);
+        }
+    };
+
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -113,20 +109,38 @@ private final Runnable syncRunnable = new Runnable() {
                 (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
 
         createNotificationChannel();
-requestNotificationPermission();
+        requestNotificationPermission();
 
-syncPrefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        syncPrefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
 
-Set<String> savedEvents = syncPrefs.getStringSet(
-        PREFS_SEEN_EVENTS, new HashSet<>());
+        Set<String> savedEvents = syncPrefs.getStringSet(
+                PREFS_SEEN_EVENTS, new HashSet<>());
 
-seenEvents.addAll(savedEvents);
+        if (savedEvents != null) {
+            seenEvents.addAll(savedEvents);
+        }
 
-buildScreen();
+        buildScreen();
 
-handler.post(tick);
-syncHandler.post(syncRunnable);
-}
+        handler.post(tick);
+        syncHandler.post(syncRunnable);
+
+        startCooldownSyncService();
+    }
+
+    private void startCooldownSyncService() {
+        Intent serviceIntent = new Intent(this, CooldownSyncService.class);
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent);
+            } else {
+                startService(serviceIntent);
+            }
+        } catch (Exception e) {
+            Log.e("BotCooldown", "No se pudo iniciar el servicio", e);
+        }
+    }
 
     private int dp(float value) {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
@@ -136,7 +150,11 @@ syncHandler.post(syncRunnable);
         GradientDrawable d = new GradientDrawable();
         d.setColor(color);
         d.setCornerRadius(dp(radius));
-        if (stroke != Color.TRANSPARENT) d.setStroke(dp(1), stroke);
+
+        if (stroke != Color.TRANSPARENT) {
+            d.setStroke(dp(1), stroke);
+        }
+
         return d;
     }
 
@@ -145,7 +163,11 @@ syncHandler.post(syncRunnable);
         t.setText(value);
         t.setTextSize(size);
         t.setTextColor(color);
-        if (bold) t.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+
+        if (bold) {
+            t.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        }
+
         return t;
     }
 
@@ -180,12 +202,15 @@ syncHandler.post(syncRunnable);
         LinearLayout brand = vertical();
         brand.setPadding(dp(14), 0, 0, 0);
         brand.addView(text("BotCooldown", 27, WHITE, true));
+
         TextView tagline = text(
                 "Controla. Espera. Automatiza.", 12, MUTED, false);
         tagline.setPadding(0, dp(4), 0, 0);
         brand.addView(tagline);
+
         header.addView(brand, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+
         root.addView(header);
 
         TextView status = text(
@@ -338,6 +363,7 @@ syncHandler.post(syncRunnable);
         delete.setTextColor(0xFFFF8585);
         delete.setTextSize(12);
         delete.setBackground(shape(0xFF291416, 0xFF71343A, 12));
+
         LinearLayout.LayoutParams dp2 = new LinearLayout.LayoutParams(
                 0, dp(44), 1);
         dp2.leftMargin = dp(10);
@@ -347,15 +373,14 @@ syncHandler.post(syncRunnable);
             c.endTime = System.currentTimeMillis() + c.durationMillis;
             c.notified = false;
             updateCooldown(c);
+
             Toast.makeText(this, "Cooldown reiniciado",
                     Toast.LENGTH_SHORT).show();
         });
 
         delete.setOnClickListener(v -> {
-            handler.removeCallbacks(tick);
             cooldowns.remove(c);
             timerList.removeView(c.card);
-            handler.post(tick);
         });
     }
 
@@ -390,6 +415,7 @@ syncHandler.post(syncRunnable);
         long seconds = remaining % 60;
 
         String time;
+
         if (hours > 0) {
             time = String.format(Locale.getDefault(),
                     "%02d:%02d:%02d", hours, minutes, seconds);
@@ -407,8 +433,10 @@ syncHandler.post(syncRunnable);
             NotificationChannel channel = new NotificationChannel(
                     CHANNEL_ID, "Cooldowns listos",
                     NotificationManager.IMPORTANCE_DEFAULT);
+
             channel.setDescription(
                     "Avisos cuando un comando esté disponible");
+
             notificationManager.createNotificationChannel(channel);
         }
     }
@@ -431,6 +459,7 @@ syncHandler.post(syncRunnable);
         }
 
         Notification notification;
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             notification = new Notification.Builder(this, CHANNEL_ID)
                     .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
@@ -452,102 +481,103 @@ syncHandler.post(syncRunnable);
                 notification);
     }
 
-    @Override
-protected void onDestroy() {
-    handler.removeCallbacks(tick);
-    syncHandler.removeCallbacks(syncRunnable);
-    networkExecutor.shutdownNow();
-    super.onDestroy();
-}
- private void syncEvents() {
-    networkExecutor.execute(() -> {
-        HttpURLConnection connection = null;
+    private void syncEvents() {
+        networkExecutor.execute(() -> {
+            HttpURLConnection connection = null;
 
-        try {
-            URL url = new URL(EVENTS_URL);
-            connection = (HttpURLConnection) url.openConnection();
-            connection.setRequestMethod("GET");
-            connection.setConnectTimeout(10000);
-            connection.setReadTimeout(10000);
+            try {
+                URL url = new URL(EVENTS_URL);
+                connection = (HttpURLConnection) url.openConnection();
+                connection.setRequestMethod("GET");
+                connection.setConnectTimeout(10000);
+                connection.setReadTimeout(10000);
 
-            int responseCode = connection.getResponseCode();
+                int responseCode = connection.getResponseCode();
 
-            if (responseCode != HttpURLConnection.HTTP_OK) {
-                Log.e("BotCooldown", "Error HTTP: " + responseCode);
-                return;
-            }
+                if (responseCode != HttpURLConnection.HTTP_OK) {
+                    Log.e("BotCooldown", "Error HTTP: " + responseCode);
+                    return;
+                }
 
-            StringBuilder response = new StringBuilder();
+                StringBuilder response = new StringBuilder();
 
-            try (InputStream input = connection.getInputStream();
-                 BufferedReader reader = new BufferedReader(
-                         new InputStreamReader(input, StandardCharsets.UTF_8))) {
+                try (InputStream input = connection.getInputStream();
+                     BufferedReader reader = new BufferedReader(
+                             new InputStreamReader(
+                                     input, StandardCharsets.UTF_8))) {
+                    String line;
 
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    response.append(line);
+                    while ((line = reader.readLine()) != null) {
+                        response.append(line);
+                    }
+                }
+
+                JSONArray events = new JSONArray(response.toString());
+                syncHandler.post(() -> processEvents(events));
+
+            } catch (Exception e) {
+                Log.e("BotCooldown", "Error al sincronizar eventos", e);
+            } finally {
+                if (connection != null) {
+                    connection.disconnect();
                 }
             }
+        });
+    }
 
-            JSONArray events = new JSONArray(response.toString());
+    private void processEvents(JSONArray events) {
+        long now = System.currentTimeMillis();
+        boolean changed = false;
 
-            syncHandler.post(() -> processEvents(events));
+        for (int i = 0; i < events.length(); i++) {
+            try {
+                JSONObject event = events.getJSONObject(i);
 
-        } catch (Exception e) {
-            Log.e("BotCooldown", "Error al sincronizar eventos", e);
-        } finally {
-            if (connection != null) {
-                connection.disconnect();
+                String command = event.getString("command");
+                long durationSeconds = event.getLong("duration");
+                long startedAt = event.getLong("startedAt");
+
+                String eventId = command + ":" + startedAt;
+
+                if (seenEvents.contains(eventId)) {
+                    continue;
+                }
+
+                long durationMillis = durationSeconds * 1000L;
+                long endTime = startedAt + durationMillis;
+
+                seenEvents.add(eventId);
+                changed = true;
+
+                if (endTime <= now || durationSeconds <= 0) {
+                    continue;
+                }
+
+                Cooldown cooldown = new Cooldown(command, durationMillis);
+                cooldown.endTime = endTime;
+
+                createCooldownCard(cooldown);
+                cooldowns.add(cooldown);
+                updateCooldown(cooldown);
+
+            } catch (Exception e) {
+                Log.e("BotCooldown", "No se pudo procesar un evento", e);
             }
         }
-    });
-}
 
-private void processEvents(JSONArray events) {
-    long now = System.currentTimeMillis();
-    boolean changed = false;
-
-    for (int i = 0; i < events.length(); i++) {
-        try {
-            JSONObject event = events.getJSONObject(i);
-
-            String command = event.getString("command");
-            long durationSeconds = event.getLong("duration");
-            long startedAt = event.getLong("startedAt");
-
-            String eventId = command + ":" + startedAt;
-
-            if (seenEvents.contains(eventId)) {
-                continue;
-            }
-
-            long durationMillis = durationSeconds * 1000L;
-            long endTime = startedAt + durationMillis;
-
-            seenEvents.add(eventId);
-            changed = true;
-
-            if (endTime <= now || durationSeconds <= 0) {
-                continue;
-            }
-
-            Cooldown cooldown = new Cooldown(command, durationMillis);
-            cooldown.endTime = endTime;
-
-            createCooldownCard(cooldown);
-            cooldowns.add(cooldown);
-            updateCooldown(cooldown);
-
-        } catch (Exception e) {
-            Log.e("BotCooldown", "No se pudo procesar un evento", e);
+        if (changed) {
+            syncPrefs.edit().putStringSet(
+                    PREFS_SEEN_EVENTS,
+                    new HashSet<>(seenEvents)
+            ).apply();
         }
     }
 
-    if (changed) {
-        syncPrefs.edit().putStringSet(
-                PREFS_SEEN_EVENTS,
-                new HashSet<>(seenEvents)
-        ).apply();
+    @Override
+    protected void onDestroy() {
+        handler.removeCallbacks(tick);
+        syncHandler.removeCallbacks(syncRunnable);
+        networkExecutor.shutdownNow();
+        super.onDestroy();
     }
-}   
 }
