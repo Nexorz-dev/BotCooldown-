@@ -6,7 +6,10 @@ import android.app.Activity;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -15,7 +18,6 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.util.Log;
 import android.view.Gravity;
 import android.view.ViewGroup;
 import android.widget.Button;
@@ -26,12 +28,15 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.Locale;
+import java.util.Set;
 
 public class MainActivity extends Activity {
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ArrayList<Cooldown> cooldowns = new ArrayList<>();
+    private final Set<String> syncedIds = new HashSet<>();
 
     private LinearLayout timerList;
     private EditText commandInput;
@@ -40,7 +45,7 @@ public class MainActivity extends Activity {
     private NotificationManager notificationManager;
 
     private static final String CHANNEL_ID = "botcooldown_ready";
-    private static final int BG = 0xFF04090C;
+    private static final String BG = "#04090C";
     private static final int CARD = 0xFF0A1316;
     private static final int GREEN = 0xFF39FF74;
     private static final int GOLD = 0xFFFFC230;
@@ -49,9 +54,11 @@ public class MainActivity extends Activity {
 
     private static class Cooldown {
         String command;
+        String eventId;
         long endTime;
         long durationMillis;
         boolean notified = false;
+        boolean notifyWhenDone = true;
         TextView view;
         LinearLayout card;
 
@@ -62,37 +69,84 @@ public class MainActivity extends Activity {
         }
     }
 
+    private final BroadcastReceiver syncReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (!CooldownSyncService.ACTION_COOLDOWN_SYNCED.equals(
+                    intent.getAction())) {
+                return;
+            }
+
+            String command = intent.getStringExtra(
+                    CooldownSyncService.EXTRA_COMMAND);
+            long endTime = intent.getLongExtra(
+                    CooldownSyncService.EXTRA_END_TIME, 0L);
+            long duration = intent.getLongExtra(
+                    CooldownSyncService.EXTRA_DURATION, 0L);
+
+            if (command == null || endTime <= System.currentTimeMillis()
+                    || duration <= 0) {
+                return;
+            }
+
+            String eventId = command + ":" + endTime;
+
+            if (!syncedIds.add(eventId)) {
+                return;
+            }
+
+            Cooldown c = new Cooldown(command, duration);
+            c.endTime = endTime;
+            c.eventId = eventId;
+            c.notifyWhenDone = false;
+
+            createCooldownCard(c);
+            cooldowns.add(c);
+            updateCooldown(c);
+        }
+    };
+
     @Override
-    public void onCreate(Bundle savedInstanceState) {
+    protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        getWindow().setStatusBarColor(BG);
-        getWindow().setNavigationBarColor(BG);
+        getWindow().setStatusBarColor(Color.rgb(4, 9, 12));
+        getWindow().setNavigationBarColor(Color.rgb(4, 9, 12));
 
         notificationManager =
                 (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
 
         createNotificationChannel();
         requestNotificationPermission();
-
         buildScreen();
 
         handler.post(tick);
+
+        IntentFilter filter = new IntentFilter(
+                CooldownSyncService.ACTION_COOLDOWN_SYNCED);
+
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(syncReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(syncReceiver, filter);
+        }
 
         startCooldownSyncService();
     }
 
     private void startCooldownSyncService() {
-        Intent serviceIntent = new Intent(this, CooldownSyncService.class);
+        Intent intent = new Intent(this, CooldownSyncService.class);
 
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(serviceIntent);
+                startForegroundService(intent);
             } else {
-                startService(serviceIntent);
+                startService(intent);
             }
         } catch (Exception e) {
-            Log.e("BotCooldown", "No se pudo iniciar el servicio", e);
+            Toast.makeText(this,
+                    "No se pudo iniciar la sincronización",
+                    Toast.LENGTH_LONG).show();
         }
     }
 
@@ -104,11 +158,9 @@ public class MainActivity extends Activity {
         GradientDrawable d = new GradientDrawable();
         d.setColor(color);
         d.setCornerRadius(dp(radius));
-
         if (stroke != Color.TRANSPARENT) {
             d.setStroke(dp(1), stroke);
         }
-
         return d;
     }
 
@@ -117,11 +169,9 @@ public class MainActivity extends Activity {
         t.setText(value);
         t.setTextSize(size);
         t.setTextColor(color);
-
         if (bold) {
             t.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         }
-
         return t;
     }
 
@@ -138,7 +188,7 @@ public class MainActivity extends Activity {
     private void buildScreen() {
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
-        scroll.setBackgroundColor(BG);
+        scroll.setBackgroundColor(Color.parseColor(BG));
 
         LinearLayout root = vertical();
         root.setPadding(dp(22), dp(24), dp(22), dp(28));
@@ -164,7 +214,6 @@ public class MainActivity extends Activity {
 
         header.addView(brand, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-
         root.addView(header);
 
         TextView status = text(
@@ -179,18 +228,18 @@ public class MainActivity extends Activity {
 
         form.addView(text("NUEVO COOLDOWN", 14, GREEN, true));
 
-        commandInput = makeInput("Comando, ej. k!drop", 0);
+        commandInput = makeInput("Comando, ej. k!drop", false);
         addInput(form, commandInput);
 
-        minutesInput = makeInput("Minutos", 2);
+        minutesInput = makeInput("Minutos", true);
         addInput(form, minutesInput);
 
-        secondsInput = makeInput("Segundos (0 a 59)", 2);
+        secondsInput = makeInput("Segundos (0 a 59)", true);
         addInput(form, secondsInput);
 
         Button start = new Button(this);
         start.setText("＋   INICIAR COOLDOWN");
-        start.setTextColor(BG);
+        start.setTextColor(Color.rgb(4, 9, 12));
         start.setTextSize(14);
         start.setTypeface(null, Typeface.BOLD);
         start.setAllCaps(false);
@@ -211,22 +260,23 @@ public class MainActivity extends Activity {
         root.addView(timerList, params(-1, -2));
 
         TextView footer = text(
-                "Tus tiempos, siempre bajo control.", 12, MUTED, false);
+                "Los cooldowns de Render aparecerán aquí mientras la aplicación esté abierta.",
+                12, MUTED, false);
         footer.setGravity(Gravity.CENTER);
         footer.setPadding(0, dp(24), 0, 0);
         root.addView(footer);
     }
 
-    private EditText makeInput(String hint, int inputType) {
+    private EditText makeInput(String hint, boolean numeric) {
         EditText e = new EditText(this);
         e.setSingleLine(true);
         e.setTextColor(WHITE);
         e.setHintTextColor(MUTED);
         e.setTextSize(15);
         e.setHint(hint);
-        e.setInputType(inputType == 0 ? 1 : 2);
+        e.setInputType(numeric ? 2 : 1);
         e.setPadding(dp(13), dp(10), dp(13), dp(10));
-        e.setBackground(shape(BG, 0xFF28503A, 12));
+        e.setBackground(shape(Color.parseColor(BG), 0xFF28503A, 12));
         return e;
     }
 
@@ -259,8 +309,8 @@ public class MainActivity extends Activity {
             }
 
             long duration = minutes * 60000L + seconds * 1000L;
-
             Cooldown c = new Cooldown(command, duration);
+
             createCooldownCard(c);
             cooldowns.add(c);
             updateCooldown(c);
@@ -286,15 +336,17 @@ public class MainActivity extends Activity {
         timerList.addView(card, cp);
         c.card = card;
 
-        TextView name = text(c.command, 16, WHITE, true);
-        card.addView(name);
+        card.addView(text(c.command, 16, WHITE, true));
 
         c.view = text("", 22, GREEN, true);
         c.view.setPadding(0, dp(10), 0, dp(5));
         card.addView(c.view);
 
         TextView hint = text(
-                "NOTIFICACIÓN AL FINALIZAR", 10, MUTED, true);
+                c.notifyWhenDone
+                        ? "NOTIFICACIÓN AL FINALIZAR"
+                        : "SINCRONIZADO DESDE RENDER",
+                10, MUTED, true);
         hint.setPadding(0, 0, 0, dp(12));
         card.addView(hint);
 
@@ -327,9 +379,6 @@ public class MainActivity extends Activity {
             c.endTime = System.currentTimeMillis() + c.durationMillis;
             c.notified = false;
             updateCooldown(c);
-
-            Toast.makeText(this, "Cooldown reiniciado",
-                    Toast.LENGTH_SHORT).show();
         });
 
         delete.setOnClickListener(v -> {
@@ -349,7 +398,10 @@ public class MainActivity extends Activity {
                         c.notified = true;
                         c.view.setText("✓  DISPONIBLE");
                         c.view.setTextColor(GREEN);
-                        sendReadyNotification(c.command);
+
+                        if (c.notifyWhenDone) {
+                            sendReadyNotification(c.command);
+                        }
                     }
                 } else {
                     updateCooldown(c);
@@ -385,7 +437,8 @@ public class MainActivity extends Activity {
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(
-                    CHANNEL_ID, "Cooldowns listos",
+                    CHANNEL_ID,
+                    "Cooldowns listos",
                     NotificationManager.IMPORTANCE_DEFAULT);
 
             channel.setDescription(
@@ -438,6 +491,12 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         handler.removeCallbacks(tick);
+
+        try {
+            unregisterReceiver(syncReceiver);
+        } catch (IllegalArgumentException ignored) {
+        }
+
         super.onDestroy();
     }
 }
