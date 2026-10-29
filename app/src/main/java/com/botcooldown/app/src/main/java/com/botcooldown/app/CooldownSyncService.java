@@ -24,22 +24,25 @@ import java.nio.charset.StandardCharsets;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 public class CooldownSyncService extends Service {
 
-    private static final String TAG = "CooldownSync";
+    public static final String ACTION_COOLDOWN_SYNCED =
+            "com.botcooldown.app.COOLDOWN_SYNCED";
+    public static final String EXTRA_COMMAND = "command";
+    public static final String EXTRA_END_TIME = "endTime";
+    public static final String EXTRA_DURATION = "duration";
 
+    private static final String TAG = "CooldownSync";
     private static final String SERVICE_CHANNEL = "cooldown_sync";
     private static final String READY_CHANNEL = "botcooldown_ready";
-
     private static final String EVENTS_URL =
             "https://cooldown-detector.onrender.com/events";
-
     private static final String PREFS_NAME = "botcooldown_sync";
-    private static final String PREFS_SERVICE_EVENTS = "service_seen_events";
+    private static final String PREFS_SEEN = "service_seen_events";
 
     private ScheduledExecutorService executor;
     private SharedPreferences prefs;
@@ -56,26 +59,24 @@ public class CooldownSyncService extends Service {
         notificationManager =
                 (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
 
-        Set<String> saved = prefs.getStringSet(
-                PREFS_SERVICE_EVENTS, new HashSet<>());
-
+        Set<String> saved = prefs.getStringSet(PREFS_SEEN, new HashSet<>());
         if (saved != null) {
             seenEvents.addAll(saved);
         }
 
         createChannels();
 
-        Notification notification;
+        Notification foregroundNotification;
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            notification = new Notification.Builder(this, SERVICE_CHANNEL)
+            foregroundNotification = new Notification.Builder(this, SERVICE_CHANNEL)
                     .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
                     .setContentTitle("BotCooldown activo")
                     .setContentText("Sincronizando cooldowns")
                     .setOngoing(true)
                     .build();
         } else {
-            notification = new Notification.Builder(this)
+            foregroundNotification = new Notification.Builder(this)
                     .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
                     .setContentTitle("BotCooldown activo")
                     .setContentText("Sincronizando cooldowns")
@@ -83,16 +84,11 @@ public class CooldownSyncService extends Service {
                     .build();
         }
 
-        startForeground(2001, notification);
+        startForeground(2001, foregroundNotification);
 
         executor = Executors.newSingleThreadScheduledExecutor();
-
         executor.scheduleWithFixedDelay(
-                this::checkEvents,
-                0,
-                15,
-                TimeUnit.SECONDS
-        );
+                this::checkEvents, 0, 15, TimeUnit.SECONDS);
     }
 
     private void checkEvents() {
@@ -115,11 +111,9 @@ public class CooldownSyncService extends Service {
 
             try (InputStream input = connection.getInputStream();
                  BufferedReader reader = new BufferedReader(
-                         new InputStreamReader(
-                                 input, StandardCharsets.UTF_8))) {
+                         new InputStreamReader(input, StandardCharsets.UTF_8))) {
 
                 String line;
-
                 while ((line = reader.readLine()) != null) {
                     response.append(line);
                 }
@@ -139,25 +133,30 @@ public class CooldownSyncService extends Service {
                 }
 
                 String eventId = command + ":" + startedAt;
-
-                if (!seenEvents.add(eventId)) {
-                    continue;
-                }
-
                 long durationMillis = durationSeconds * 1000L;
                 long endTime = startedAt + durationMillis;
                 long remainingMillis = endTime - System.currentTimeMillis();
+
+                if (!seenEvents.contains(eventId)) {
+                    seenEvents.add(eventId);
+                    saveSeenEvents();
+
+                    Intent synced = new Intent(ACTION_COOLDOWN_SYNCED);
+                    synced.setPackage(getPackageName());
+                    synced.putExtra(EXTRA_COMMAND, command);
+                    synced.putExtra(EXTRA_END_TIME, endTime);
+                    synced.putExtra(EXTRA_DURATION, durationMillis);
+                    sendBroadcast(synced);
+                }
 
                 if (remainingMillis > 0) {
                     scheduleReadyNotification(
                             eventId, command, remainingMillis);
                 }
-
-                saveSeenEvents();
             }
 
         } catch (Exception e) {
-            Log.e(TAG, "Error al consultar o procesar eventos", e);
+            Log.e(TAG, "Error al sincronizar con Render", e);
         } finally {
             if (connection != null) {
                 connection.disconnect();
@@ -178,51 +177,46 @@ public class CooldownSyncService extends Service {
 
         executor.schedule(() -> {
             try {
-                if (Build.VERSION.SDK_INT < 33 ||
+                if (Build.VERSION.SDK_INT >= 33 &&
                         checkSelfPermission(
                                 android.Manifest.permission.POST_NOTIFICATIONS)
-                                == PackageManager.PERMISSION_GRANTED) {
-
-                    Notification notification;
-
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        notification = new Notification.Builder(
-                                this, READY_CHANNEL)
-                                .setSmallIcon(
-                                        android.R.drawable.ic_lock_idle_alarm)
-                                .setContentTitle("BotCooldown")
-                                .setContentText(
-                                        command + " ya está disponible")
-                                .setAutoCancel(true)
-                                .build();
-                    } else {
-                        notification = new Notification.Builder(this)
-                                .setSmallIcon(
-                                        android.R.drawable.ic_lock_idle_alarm)
-                                .setContentTitle("BotCooldown")
-                                .setContentText(
-                                        command + " ya está disponible")
-                                .setAutoCancel(true)
-                                .build();
-                    }
-
-                    int notificationId = eventId.hashCode()
-                            & 0x7fffffff;
-
-                    notificationManager.notify(
-                            notificationId, notification);
+                                != PackageManager.PERMISSION_GRANTED) {
+                    return;
                 }
+
+                Notification notification;
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    notification = new Notification.Builder(this, READY_CHANNEL)
+                            .setSmallIcon(
+                                    android.R.drawable.ic_lock_idle_alarm)
+                            .setContentTitle("BotCooldown")
+                            .setContentText(command + " ya está disponible")
+                            .setAutoCancel(true)
+                            .build();
+                } else {
+                    notification = new Notification.Builder(this)
+                            .setSmallIcon(
+                                    android.R.drawable.ic_lock_idle_alarm)
+                            .setContentTitle("BotCooldown")
+                            .setContentText(command + " ya está disponible")
+                            .setAutoCancel(true)
+                            .build();
+                }
+
+                int notificationId = eventId.hashCode() & 0x7fffffff;
+                notificationManager.notify(notificationId, notification);
+
             } catch (Exception e) {
-                Log.e(TAG, "No se pudo mostrar la notificación", e);
+                Log.e(TAG, "No se pudo enviar la notificación", e);
             }
         }, delayMillis, TimeUnit.MILLISECONDS);
     }
 
     private void saveSeenEvents() {
-        prefs.edit().putStringSet(
-                PREFS_SERVICE_EVENTS,
-                new HashSet<>(seenEvents)
-        ).apply();
+        prefs.edit()
+                .putStringSet(PREFS_SEEN, new HashSet<>(seenEvents))
+                .apply();
     }
 
     private void createChannels() {
@@ -252,7 +246,6 @@ public class CooldownSyncService extends Service {
         if (executor != null) {
             executor.shutdownNow();
         }
-
         super.onDestroy();
     }
 
