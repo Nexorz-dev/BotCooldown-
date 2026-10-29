@@ -72,8 +72,12 @@ client.on('messageCreate', (message) => {
 
   if (message.author.bot) {
     const rejected =
-      text.includes('you already claimed') &&
-      text.includes('you can claim it again in:');
+  text.includes('you already claimed') ||
+  text.includes('you already received') ||
+  text.includes('you have already received') ||
+  text.includes('you have already placed') ||
+  text.includes('you recently received') ||
+  text.includes("you've already claimed");
 
     if (rejected) {
       const index = pendingAttempts.findLastIndex(
