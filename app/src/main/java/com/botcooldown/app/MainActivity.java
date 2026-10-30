@@ -450,12 +450,13 @@ public class MainActivity extends Activity {
                 .setNeutralButton("Copiar código", null)
                 .create();
 
-        dialog.setOnShowListener(d -> {
-            if (dialog.getWindow() != null) {
-                dialog.getWindow().setBackgroundDrawable(
-                        shape(CARD, GREEN, 18));
-            }
+        // Aplicar el fondo antes de mostrar el diálogo.
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setBackgroundDrawable(
+                    shape(CARD, GREEN, 18));
+        }
 
+        dialog.setOnShowListener(d -> {
             int titleId = getResources().getIdentifier(
                     "alertTitle", "id", "android");
 
