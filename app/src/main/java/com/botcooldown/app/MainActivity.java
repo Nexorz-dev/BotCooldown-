@@ -1,12 +1,16 @@
+
 package com.botcooldown.app;
 
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlarmManager;
+import android.app.AlertDialog;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -36,12 +40,15 @@ import org.json.JSONObject;
 import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Locale;
 import java.util.Set;
+import java.util.UUID;
 
 public class MainActivity extends Activity {
 
@@ -53,20 +60,43 @@ public class MainActivity extends Activity {
     private EditText commandInput;
     private EditText minutesInput;
     private EditText secondsInput;
+
+    private TextView discordStatusView;
+    private Button linkButton;
+    private Button unlinkButton;
+
     private NotificationManager notificationManager;
     private AlarmManager alarmManager;
     private SharedPreferences preferences;
+    private SharedPreferences linkPreferences;
 
     private static int nextAlarmId = 1000;
     private boolean requestingExactAlarmPermission = false;
+    private boolean pollingForLink = false;
+
+    private String currentLinkCode = "";
+    private long linkExpiresAt = 0L;
+
+    private final Handler linkHandler = new Handler(Looper.getMainLooper());
 
     private static final String CHANNEL_ID = "botcooldown_ready";
-    private static final String EVENTS_URL =
-            "https://cooldown-detector.onrender.com/events";
+
+    private static final String API_URL =
+            "https://cooldown-detector.onrender.com";
+
+    private static final String EVENTS_URL = API_URL + "/events";
+    private static final String LINK_REQUEST_URL = API_URL + "/link/request";
+    private static final String LINK_STATUS_URL = API_URL + "/link/status";
+    private static final String LINK_UNLINK_URL = API_URL + "/link/unlink";
 
     private static final String PREFS_NAME = "botcooldown_preferences";
     private static final String PREF_MANUAL_TIMERS = "manual_timers";
     private static final String PREF_SYNCED_IDS = "synced_event_ids";
+
+    private static final String LINK_PREFS = "botcooldown_link";
+    private static final String PREF_INSTALLATION_ID = "installation_id";
+    private static final String PREF_INSTALLATION_SECRET = "installation_secret";
+    private static final String PREF_API_TOKEN = "api_token";
 
     private static final int MAX_SAVED_SYNCED_IDS = 500;
 
@@ -121,6 +151,30 @@ public class MainActivity extends Activity {
         }
     };
 
+    private final Runnable linkPoll = new Runnable() {
+        @Override
+        public void run() {
+            if (!pollingForLink) {
+                return;
+            }
+
+            if (linkExpiresAt > 0
+                    && System.currentTimeMillis() >= linkExpiresAt) {
+                pollingForLink = false;
+                currentLinkCode = "";
+                updateDiscordStatus(false);
+
+                Toast.makeText(
+                        MainActivity.this,
+                        "El código de vinculación ha expirado",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+
+            checkLinkStatus(true);
+        }
+    };
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -132,7 +186,11 @@ public class MainActivity extends Activity {
                 (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         alarmManager =
                 (AlarmManager) getSystemService(ALARM_SERVICE);
+
         preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        linkPreferences = getSharedPreferences(LINK_PREFS, MODE_PRIVATE);
+
+        getOrCreateInstallationCredentials();
 
         restoreSyncedIds();
 
@@ -153,8 +211,8 @@ public class MainActivity extends Activity {
         }
 
         handler.post(tick);
-        fetchActiveCooldowns();
-        startCooldownSyncService();
+
+        checkLinkStatus(false);
     }
 
     @Override
@@ -169,6 +227,405 @@ public class MainActivity extends Activity {
                         && c.endTime > System.currentTimeMillis()) {
                     scheduleManualAlarm(c);
                 }
+            }
+        }
+
+        checkLinkStatus(false);
+    }
+
+    private void getOrCreateInstallationCredentials() {
+        String installationId = linkPreferences.getString(
+                PREF_INSTALLATION_ID, null);
+
+        String installationSecret = linkPreferences.getString(
+                PREF_INSTALLATION_SECRET, null);
+
+        if (installationId == null || installationSecret == null) {
+            installationId = UUID.randomUUID().toString();
+
+            byte[] bytes = new byte[32];
+            new SecureRandom().nextBytes(bytes);
+
+            StringBuilder hex = new StringBuilder();
+
+            for (byte b : bytes) {
+                hex.append(String.format(Locale.US, "%02x", b & 0xff));
+            }
+
+            installationSecret = hex.toString();
+
+            linkPreferences.edit()
+                    .putString(PREF_INSTALLATION_ID, installationId)
+                    .putString(PREF_INSTALLATION_SECRET, installationSecret)
+                    .apply();
+        }
+    }
+
+    private String getApiToken() {
+        return linkPreferences.getString(PREF_API_TOKEN, "");
+    }
+
+    private JSONObject postJson(String endpoint, JSONObject body, String token)
+            throws Exception {
+
+        HttpURLConnection connection = null;
+
+        try {
+            URL url = new URL(endpoint);
+            connection = (HttpURLConnection) url.openConnection();
+
+            connection.setRequestMethod("POST");
+            connection.setConnectTimeout(10000);
+            connection.setReadTimeout(10000);
+            connection.setDoOutput(true);
+
+            connection.setRequestProperty(
+                    "Content-Type", "application/json; charset=UTF-8");
+            connection.setRequestProperty("Accept", "application/json");
+
+            if (token != null && !token.isEmpty()) {
+                connection.setRequestProperty(
+                        "Authorization", "Bearer " + token);
+            }
+
+            byte[] data = body.toString().getBytes("UTF-8");
+
+            try (OutputStream output = connection.getOutputStream()) {
+                output.write(data);
+                output.flush();
+            }
+
+            int responseCode = connection.getResponseCode();
+
+            InputStream input = responseCode >= 200 && responseCode < 400
+                    ? connection.getInputStream()
+                    : connection.getErrorStream();
+
+            StringBuilder result = new StringBuilder();
+
+            if (input != null) {
+                try (BufferedReader reader = new BufferedReader(
+                        new InputStreamReader(input, "UTF-8"))) {
+                    String line;
+
+                    while ((line = reader.readLine()) != null) {
+                        result.append(line);
+                    }
+                }
+            }
+
+            JSONObject response = result.length() > 0
+                    ? new JSONObject(result.toString())
+                    : new JSONObject();
+
+            response.put("_httpCode", responseCode);
+
+            return response;
+
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
+        }
+    }
+
+    private JSONObject createInstallationJson() throws Exception {
+        JSONObject body = new JSONObject();
+
+        body.put(
+                "installationId",
+                linkPreferences.getString(PREF_INSTALLATION_ID, ""));
+
+        body.put(
+                "installationSecret",
+                linkPreferences.getString(PREF_INSTALLATION_SECRET, ""));
+
+        return body;
+    }
+
+    private void requestDiscordLink() {
+        if (linkButton != null) {
+            linkButton.setEnabled(false);
+        }
+
+        new Thread(() -> {
+            try {
+                JSONObject body = createInstallationJson();
+
+                JSONObject response = postJson(
+                        LINK_REQUEST_URL, body, null);
+
+                int code = response.optInt("_httpCode", 0);
+
+                if (code < 200 || code >= 300) {
+                    throw new Exception(
+                            response.optString("error",
+                                    "No se pudo generar el código"));
+                }
+
+                String linkCode = response.optString("code", "");
+
+                if (linkCode.isEmpty()) {
+                    throw new Exception("El servidor no entregó un código");
+                }
+
+                String expiresAt = response.optString("expiresAt", "");
+
+                long expiration = 0L;
+
+                if (!expiresAt.isEmpty()) {
+                    try {
+                        expiration = java.time.Instant.parse(
+                                expiresAt).toEpochMilli();
+                    } catch (Exception ignored) {
+                    }
+                }
+
+                final long finalExpiration = expiration;
+
+                handler.post(() -> {
+                    if (isFinishing() || isDestroyed()) {
+                        return;
+                    }
+
+                    if (linkButton != null) {
+                        linkButton.setEnabled(true);
+                    }
+
+                    currentLinkCode = linkCode;
+                    linkExpiresAt = finalExpiration;
+
+                    showLinkCodeDialog(linkCode);
+
+                    pollingForLink = true;
+                    linkHandler.removeCallbacks(linkPoll);
+                    linkHandler.postDelayed(linkPoll, 3000);
+                });
+
+            } catch (Exception e) {
+                handler.post(() -> {
+                    if (linkButton != null) {
+                        linkButton.setEnabled(true);
+                    }
+
+                    Toast.makeText(
+                            MainActivity.this,
+                            "Error al solicitar vinculación: "
+                                    + e.getMessage(),
+                            Toast.LENGTH_LONG).show();
+                });
+            }
+        }).start();
+    }
+
+    private void showLinkCodeDialog(String code) {
+        LinearLayout layout = vertical();
+        layout.setPadding(dp(22), dp(16), dp(22), dp(8));
+
+        TextView instructions = text(
+                "Envía estos mensajes al bot por Discord:\n\n"
+                        + "1. Escribe b!register\n"
+                        + "2. Después envía el código que aparece abajo.\n\n"
+                        + "La vinculación se confirmará automáticamente.",
+                14, WHITE, false);
+
+        layout.addView(instructions);
+
+        TextView codeView = text(code, 27, GREEN, true);
+        codeView.setGravity(Gravity.CENTER);
+        codeView.setPadding(0, dp(20), 0, dp(20));
+        layout.addView(codeView);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Vincular Discord")
+                .setView(layout)
+                .setNegativeButton("Cerrar", (d, w) -> d.dismiss())
+                .setNeutralButton("Copiar código", null)
+                .create();
+
+        dialog.setOnShowListener(d -> {
+            Button copy = dialog.getButton(
+                    AlertDialog.BUTTON_NEUTRAL);
+
+            copy.setOnClickListener(v -> {
+                ClipboardManager clipboard =
+                        (ClipboardManager) getSystemService(
+                                CLIPBOARD_SERVICE);
+
+                clipboard.setPrimaryClip(
+                        ClipData.newPlainText("Código BotCooldown", code));
+
+                Toast.makeText(
+                        this,
+                        "Código copiado",
+                        Toast.LENGTH_SHORT).show();
+            });
+        });
+
+        dialog.show();
+    }
+
+    private void checkLinkStatus(boolean fromPolling) {
+        new Thread(() -> {
+            try {
+                JSONObject body = createInstallationJson();
+
+                JSONObject response = postJson(
+                        LINK_STATUS_URL, body, null);
+
+                int code = response.optInt("_httpCode", 0);
+
+                if (code < 200 || code >= 300) {
+                    return;
+                }
+
+                boolean linked = response.optBoolean("linked", false);
+                String token = response.optString("token", "");
+
+                if (linked && !token.isEmpty()) {
+                    linkPreferences.edit()
+                            .putString(PREF_API_TOKEN, token)
+                            .apply();
+
+                    handler.post(() -> {
+                        if (isFinishing() || isDestroyed()) {
+                            return;
+                        }
+
+                        pollingForLink = false;
+                        linkHandler.removeCallbacks(linkPoll);
+                        currentLinkCode = "";
+
+                        updateDiscordStatus(true);
+                        startCooldownSyncService();
+
+                        if (fromPolling) {
+                            Toast.makeText(
+                                    MainActivity.this,
+                                    "¡Discord vinculado correctamente!",
+                                    Toast.LENGTH_LONG).show();
+                        }
+                    });
+
+                } else {
+                    String previousToken = getApiToken();
+
+                    if (!previousToken.isEmpty()) {
+                        linkPreferences.edit()
+                                .remove(PREF_API_TOKEN)
+                                .apply();
+
+                        handler.post(() -> {
+                            updateDiscordStatus(false);
+                            stopService(new Intent(
+                                    MainActivity.this,
+                                    CooldownSyncService.class));
+
+                            if (fromPolling) {
+                                Toast.makeText(
+                                        MainActivity.this,
+                                        "La vinculación no está activa",
+                                        Toast.LENGTH_SHORT).show();
+                            }
+                        });
+                    } else {
+                        handler.post(() -> updateDiscordStatus(false));
+                    }
+                }
+
+            } catch (Exception ignored) {
+            }
+        }).start();
+    }
+
+    private void unlinkDiscord() {
+        String token = getApiToken();
+
+        if (token.isEmpty()) {
+            updateDiscordStatus(false);
+            return;
+        }
+
+        unlinkButton.setEnabled(false);
+
+        new Thread(() -> {
+            boolean success = false;
+
+            try {
+                JSONObject response = postJson(
+                        LINK_UNLINK_URL, new JSONObject(), token);
+
+                int code = response.optInt("_httpCode", 0);
+
+                success = code >= 200 && code < 300
+                        || code == HttpURLConnection.HTTP_UNAUTHORIZED;
+
+            } catch (Exception ignored) {
+            }
+
+            final boolean result = success;
+
+            handler.post(() -> {
+                unlinkButton.setEnabled(true);
+
+                if (result) {
+                    linkPreferences.edit()
+                            .remove(PREF_API_TOKEN)
+                            .apply();
+
+                    pollingForLink = false;
+                    linkHandler.removeCallbacks(linkPoll);
+
+                    stopService(new Intent(
+                            MainActivity.this,
+                            CooldownSyncService.class));
+
+                    updateDiscordStatus(false);
+
+                    Toast.makeText(
+                            MainActivity.this,
+                            "Discord desvinculado",
+                            Toast.LENGTH_LONG).show();
+
+                } else {
+                    Toast.makeText(
+                            MainActivity.this,
+                            "No se pudo desvincular. Inténtalo nuevamente.",
+                            Toast.LENGTH_LONG).show();
+                }
+            });
+        }).start();
+    }
+
+    private void updateDiscordStatus(boolean linked) {
+        if (discordStatusView == null) {
+            return;
+        }
+
+        if (linked) {
+            discordStatusView.setText("●  CUENTA DISCORD VINCULADA");
+            discordStatusView.setTextColor(GREEN);
+
+            if (linkButton != null) {
+                linkButton.setEnabled(false);
+                linkButton.setText("✓  DISCORD VINCULADO");
+            }
+
+            if (unlinkButton != null) {
+                unlinkButton.setVisibility(android.view.View.VISIBLE);
+            }
+
+        } else {
+            discordStatusView.setText("●  DISCORD NO VINCULADO");
+            discordStatusView.setTextColor(GOLD);
+
+            if (linkButton != null) {
+                linkButton.setEnabled(true);
+                linkButton.setText("＋  VINCULAR DISCORD");
+            }
+
+            if (unlinkButton != null) {
+                unlinkButton.setVisibility(android.view.View.GONE);
             }
         }
     }
@@ -244,97 +701,11 @@ public class MainActivity extends Activity {
         updateCooldown(c);
     }
 
-    private void fetchActiveCooldowns() {
-        Thread thread = new Thread(() -> {
-            HttpURLConnection connection = null;
-
-            try {
-                URL url = new URL(EVENTS_URL);
-                connection = (HttpURLConnection) url.openConnection();
-                connection.setRequestMethod("GET");
-                connection.setConnectTimeout(10000);
-                connection.setReadTimeout(10000);
-                connection.setRequestProperty("Accept", "application/json");
-
-                if (connection.getResponseCode()
-                        != HttpURLConnection.HTTP_OK) {
-                    return;
-                }
-
-                StringBuilder result = new StringBuilder();
-
-                try (InputStream input = connection.getInputStream();
-                     BufferedReader reader = new BufferedReader(
-                             new InputStreamReader(input))) {
-                    String line;
-                    while ((line = reader.readLine()) != null) {
-                        result.append(line);
-                    }
-                }
-
-                JSONArray events = new JSONArray(result.toString());
-
-                for (int i = 0; i < events.length(); i++) {
-                    JSONObject event = events.getJSONObject(i);
-
-                    String command = event.optString("command", "");
-                    long durationSeconds = event.optLong("duration", 0L);
-                    long startedAt = event.optLong("startedAt", 0L);
-
-                    if (command.trim().isEmpty()
-                            || durationSeconds <= 0
-                            || startedAt <= 0
-                            || durationSeconds > Long.MAX_VALUE / 1000L) {
-                        continue;
-                    }
-
-                    long durationMillis = durationSeconds * 1000L;
-
-                    if (startedAt > Long.MAX_VALUE - durationMillis) {
-                        continue;
-                    }
-
-                    long endTime = startedAt + durationMillis;
-
-                    if (endTime <= System.currentTimeMillis()) {
-                        continue;
-                    }
-
-                    final String savedCommand = command;
-                    final long savedEndTime = endTime;
-                    final long savedDuration = durationMillis;
-
-                    handler.post(() -> {
-                        if (!isFinishing() && !isDestroyed()) {
-                            addSyncedCooldown(
-                                    savedCommand,
-                                    savedEndTime,
-                                    savedDuration);
-                        }
-                    });
-                }
-
-            } catch (Exception e) {
-                handler.post(() -> {
-                    if (!isFinishing() && !isDestroyed()) {
-                        Toast.makeText(
-                                MainActivity.this,
-                                "No se pudieron recuperar los cooldowns",
-                                Toast.LENGTH_SHORT).show();
-                    }
-                });
-            } finally {
-                if (connection != null) {
-                    connection.disconnect();
-                }
-            }
-        });
-
-        thread.setDaemon(true);
-        thread.start();
-    }
-
     private void startCooldownSyncService() {
+        if (getApiToken().isEmpty()) {
+            return;
+        }
+
         Intent intent = new Intent(this, CooldownSyncService.class);
 
         try {
@@ -641,10 +1012,68 @@ public class MainActivity extends Activity {
         status.setPadding(0, dp(30), 0, dp(12));
         root.addView(status);
 
+        LinearLayout discordCard = vertical();
+        discordCard.setPadding(dp(16), dp(16), dp(16), dp(16));
+        discordCard.setBackground(shape(CARD, 0xFF17432A, 18));
+
+        root.addView(discordCard, params(-1, -2));
+
+        discordCard.addView(
+                text("CUENTA DISCORD", 14, GOLD, true));
+
+        discordStatusView = text(
+                "●  COMPROBANDO VINCULACIÓN...", 12, MUTED, true);
+
+        LinearLayout.LayoutParams statusParams = params(-1, -2);
+        statusParams.topMargin = dp(12);
+        discordCard.addView(discordStatusView, statusParams);
+
+        linkButton = new Button(this);
+        linkButton.setText("＋  VINCULAR DISCORD");
+        linkButton.setTextColor(Color.rgb(4, 9, 12));
+        linkButton.setTextSize(13);
+        linkButton.setTypeface(null, Typeface.BOLD);
+        linkButton.setAllCaps(false);
+        linkButton.setBackground(shape(GREEN, GREEN, 12));
+
+        LinearLayout.LayoutParams linkParams = params(-1, dp(48));
+        linkParams.topMargin = dp(14);
+        discordCard.addView(linkButton, linkParams);
+
+        linkButton.setOnClickListener(v -> requestDiscordLink());
+
+        unlinkButton = new Button(this);
+        unlinkButton.setText("DESVINCULAR DISCORD");
+        unlinkButton.setTextColor(0xFFFF8585);
+        unlinkButton.setTextSize(12);
+        unlinkButton.setAllCaps(false);
+        unlinkButton.setBackground(shape(
+                0xFF291416, 0xFF71343A, 12));
+
+        LinearLayout.LayoutParams unlinkParams = params(-1, dp(46));
+        unlinkParams.topMargin = dp(8);
+        discordCard.addView(unlinkButton, unlinkParams);
+
+        unlinkButton.setOnClickListener(v ->
+                new AlertDialog.Builder(this)
+                        .setTitle("Desvincular Discord")
+                        .setMessage(
+                                "¿Seguro que quieres desvincular esta cuenta? "
+                                        + "Los temporizadores manuales seguirán funcionando.")
+                        .setNegativeButton("Cancelar", null)
+                        .setPositiveButton("Desvincular",
+                                (dialog, which) -> unlinkDiscord())
+                        .show());
+
+        updateDiscordStatus(!getApiToken().isEmpty());
+
         LinearLayout form = vertical();
         form.setPadding(dp(16), dp(16), dp(16), dp(18));
         form.setBackground(shape(CARD, 0xFF17432A, 18));
-        root.addView(form, params(-1, -2));
+
+        LinearLayout.LayoutParams formParams = params(-1, -2);
+        formParams.topMargin = dp(22);
+        root.addView(form, formParams);
 
         form.addView(text("NUEVO COOLDOWN", 14, GREEN, true));
 
@@ -895,6 +1324,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         handler.removeCallbacks(tick);
+        linkHandler.removeCallbacks(linkPoll);
 
         try {
             unregisterReceiver(syncReceiver);
