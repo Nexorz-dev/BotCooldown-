@@ -5,6 +5,7 @@ import android.Manifest;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -87,6 +88,25 @@ public class CooldownAlarmReceiver extends BroadcastReceiver {
             manager.createNotificationChannel(channel);
         }
 
+        // Acción para abrir BotCooldown al tocar la notificación.
+        Intent openAppIntent = new Intent(context, MainActivity.class);
+        openAppIntent.setFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK
+                        | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                        | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+
+        int pendingIntentFlags = PendingIntent.FLAG_UPDATE_CURRENT;
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            pendingIntentFlags |= PendingIntent.FLAG_IMMUTABLE;
+        }
+
+        PendingIntent contentIntent = PendingIntent.getActivity(
+                context,
+                alarmId,
+                openAppIntent,
+                pendingIntentFlags);
+
         Notification notification;
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -96,6 +116,7 @@ public class CooldownAlarmReceiver extends BroadcastReceiver {
                     .setContentTitle("BotCooldown")
                     .setContentText(
                             command + " ya está disponible")
+                    .setContentIntent(contentIntent)
                     .setAutoCancel(true)
                     .build();
         } else {
@@ -105,6 +126,7 @@ public class CooldownAlarmReceiver extends BroadcastReceiver {
                     .setContentTitle("BotCooldown")
                     .setContentText(
                             command + " ya está disponible")
+                    .setContentIntent(contentIntent)
                     .setAutoCancel(true)
                     .build();
         }
