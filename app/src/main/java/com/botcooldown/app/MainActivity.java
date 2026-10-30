@@ -208,14 +208,12 @@ public class MainActivity extends Activity {
 
         String eventId = command.trim() + ":" + endTime;
 
-        // Evita duplicados que ya estén visibles.
         for (Cooldown existing : cooldowns) {
             if (eventId.equals(existing.eventId)) {
                 return;
             }
         }
 
-        // Conserva el registro, pero permite recuperar el temporizador.
         if (syncedIds.add(eventId)) {
             if (syncedIds.size() > MAX_SAVED_SYNCED_IDS) {
                 Set<String> limited = new HashSet<>();
@@ -395,6 +393,10 @@ public class MainActivity extends Activity {
         intent.setAction(CooldownAlarmReceiver.ACTION_READY);
         intent.putExtra(
                 CooldownAlarmReceiver.EXTRA_COMMAND, c.command);
+        intent.putExtra(
+                CooldownAlarmReceiver.EXTRA_END_TIME, c.endTime);
+        intent.putExtra(
+                CooldownAlarmReceiver.EXTRA_ALARM_ID, c.alarmRequestCode);
 
         int flags = PendingIntent.FLAG_UPDATE_CURRENT;
 
