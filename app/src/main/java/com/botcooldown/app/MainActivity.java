@@ -1,3 +1,4 @@
+
 package com.botcooldown.app;
 
 import android.Manifest;
@@ -134,7 +135,6 @@ public class MainActivity extends Activity {
                 (AlarmManager) getSystemService(ALARM_SERVICE);
         preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
 
-        // Recuperar identificadores procesados anteriormente.
         restoreSyncedIds();
 
         createNotificationChannel();
@@ -174,7 +174,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    // Recupera los identificadores persistentes de eventos de Render.
     private void restoreSyncedIds() {
         Set<String> saved = preferences.getStringSet(
                 PREF_SYNCED_IDS, new HashSet<>());
@@ -186,7 +185,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    // Guarda los identificadores para sobrevivir al cierre y reinicio.
     private void saveSyncedIds() {
         if (preferences == null) {
             return;
@@ -208,33 +206,34 @@ public class MainActivity extends Activity {
             return;
         }
 
-        // Identificador estable para el mismo evento.
         String eventId = command.trim() + ":" + endTime;
 
-        // No crear una segunda tarjeta si ya fue procesado.
-        if (syncedIds.contains(eventId)) {
-            return;
+        // Evita duplicados que ya estén visibles.
+        for (Cooldown existing : cooldowns) {
+            if (eventId.equals(existing.eventId)) {
+                return;
+            }
         }
 
-        syncedIds.add(eventId);
-        saveSyncedIds();
+        // Conserva el registro, pero permite recuperar el temporizador.
+        if (syncedIds.add(eventId)) {
+            if (syncedIds.size() > MAX_SAVED_SYNCED_IDS) {
+                Set<String> limited = new HashSet<>();
+                int count = 0;
 
-        // Limitar el historial para no acumular identificadores sin límite.
-        if (syncedIds.size() > MAX_SAVED_SYNCED_IDS) {
-            Set<String> limited = new HashSet<>();
-            int count = 0;
+                for (String id : syncedIds) {
+                    if (count >= MAX_SAVED_SYNCED_IDS) {
+                        break;
+                    }
 
-            for (String id : syncedIds) {
-                if (count >= MAX_SAVED_SYNCED_IDS) {
-                    break;
+                    limited.add(id);
+                    count++;
                 }
 
-                limited.add(id);
-                count++;
+                syncedIds.clear();
+                syncedIds.addAll(limited);
             }
 
-            syncedIds.clear();
-            syncedIds.addAll(limited);
             saveSyncedIds();
         }
 
