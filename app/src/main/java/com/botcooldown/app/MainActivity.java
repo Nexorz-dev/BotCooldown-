@@ -418,9 +418,12 @@ public class MainActivity extends Activity {
         }).start();
     }
 
+    // DIÁLOGO DE VINCULACIÓN CON FONDO OSCURO Y BORDES VERDES
     private void showLinkCodeDialog(String code) {
         LinearLayout layout = vertical();
-        layout.setPadding(dp(22), dp(16), dp(22), dp(8));
+        layout.setPadding(dp(22), dp(18), dp(22), dp(18));
+        layout.setBackground(shape(
+                Color.parseColor(BG), 0xFF17432A, 16));
 
         TextView instructions = text(
                 "Envía estos mensajes al bot por Discord:\n\n"
@@ -433,8 +436,12 @@ public class MainActivity extends Activity {
 
         TextView codeView = text(code, 27, GREEN, true);
         codeView.setGravity(Gravity.CENTER);
-        codeView.setPadding(0, dp(20), 0, dp(20));
-        layout.addView(codeView);
+        codeView.setPadding(dp(10), dp(18), dp(10), dp(18));
+        codeView.setBackground(shape(CARD, GREEN, 12));
+
+        LinearLayout.LayoutParams codeParams = params(-1, -2);
+        codeParams.topMargin = dp(18);
+        layout.addView(codeView, codeParams);
 
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("Vincular Discord")
@@ -444,22 +451,48 @@ public class MainActivity extends Activity {
                 .create();
 
         dialog.setOnShowListener(d -> {
+            if (dialog.getWindow() != null) {
+                dialog.getWindow().setBackgroundDrawable(
+                        shape(CARD, GREEN, 18));
+            }
+
+            int titleId = getResources().getIdentifier(
+                    "alertTitle", "id", "android");
+
+            TextView title = dialog.findViewById(titleId);
+
+            if (title != null) {
+                title.setTextColor(GREEN);
+            }
+
             Button copy = dialog.getButton(
                     AlertDialog.BUTTON_NEUTRAL);
 
-            copy.setOnClickListener(v -> {
-                ClipboardManager clipboard =
-                        (ClipboardManager) getSystemService(
-                                CLIPBOARD_SERVICE);
+            Button close = dialog.getButton(
+                    AlertDialog.BUTTON_NEGATIVE);
 
-                clipboard.setPrimaryClip(
-                        ClipData.newPlainText("Código BotCooldown", code));
+            if (copy != null) {
+                copy.setTextColor(GREEN);
 
-                Toast.makeText(
-                        this,
-                        "Código copiado",
-                        Toast.LENGTH_SHORT).show();
-            });
+                copy.setOnClickListener(v -> {
+                    ClipboardManager clipboard =
+                            (ClipboardManager) getSystemService(
+                                    CLIPBOARD_SERVICE);
+
+                    clipboard.setPrimaryClip(
+                            ClipData.newPlainText(
+                                    "Código BotCooldown", code));
+
+                    Toast.makeText(
+                            this,
+                            "Código copiado",
+                            Toast.LENGTH_SHORT).show();
+                });
+            }
+
+            if (close != null) {
+                close.setTextColor(GOLD);
+            }
         });
 
         dialog.show();
