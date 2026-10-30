@@ -1,4 +1,3 @@
-
 package com.botcooldown.app;
 
 import android.app.AlarmManager;
