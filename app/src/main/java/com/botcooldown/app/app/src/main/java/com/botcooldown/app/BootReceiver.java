@@ -8,6 +8,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Build;
+import android.util.Log;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -25,33 +26,49 @@ public class BootReceiver extends BroadcastReceiver {
         }
 
         SharedPreferences preferences =
-                context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+                context.getSharedPreferences(
+                        PREFS_NAME, Context.MODE_PRIVATE);
 
-        String savedTimers = preferences.getString(PREF_MANUAL_TIMERS, "[]");
+        String savedTimers = preferences.getString(
+                PREF_MANUAL_TIMERS, "[]");
 
         try {
             JSONArray timers = new JSONArray(savedTimers);
-            AlarmManager alarmManager =
-                    (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
 
-            if (alarmManager == null) return;
+            AlarmManager alarmManager =
+                    (AlarmManager) context.getSystemService(
+                            Context.ALARM_SERVICE);
+
+            if (alarmManager == null) {
+                return;
+            }
 
             for (int i = 0; i < timers.length(); i++) {
                 JSONObject timer = timers.getJSONObject(i);
 
                 String command = timer.optString("command", "");
                 long endTime = timer.optLong("endTime", 0L);
-                int requestCode = timer.optInt("alarmRequestCode", i + 1000);
+                int requestCode = timer.optInt(
+                        "alarmRequestCode", -1);
 
-                // No programar temporizadores vencidos o incompletos.
-                if (command.isEmpty() || endTime <= System.currentTimeMillis()) {
+                if (command.trim().isEmpty()
+                        || endTime <= System.currentTimeMillis()
+                        || requestCode <= 0) {
                     continue;
                 }
 
-                Intent alarmIntent =
-                        new Intent(context, CooldownAlarmReceiver.class);
+                Intent alarmIntent = new Intent(
+                        context, CooldownAlarmReceiver.class);
+
+                alarmIntent.setAction(
+                        CooldownAlarmReceiver.ACTION_READY);
+
                 alarmIntent.putExtra(
                         CooldownAlarmReceiver.EXTRA_COMMAND, command);
+                alarmIntent.putExtra(
+                        CooldownAlarmReceiver.EXTRA_END_TIME, endTime);
+                alarmIntent.putExtra(
+                        CooldownAlarmReceiver.EXTRA_ALARM_ID, requestCode);
 
                 PendingIntent pendingIntent = PendingIntent.getBroadcast(
                         context,
@@ -61,31 +78,31 @@ public class BootReceiver extends BroadcastReceiver {
                                 | PendingIntent.FLAG_IMMUTABLE
                 );
 
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-                            && !alarmManager.canScheduleExactAlarms()) {
-                        alarmManager.setAndAllowWhileIdle(
-                                AlarmManager.RTC_WAKEUP,
-                                endTime,
-                                pendingIntent
-                        );
-                    } else {
-                        alarmManager.setExactAndAllowWhileIdle(
-                                AlarmManager.RTC_WAKEUP,
-                                endTime,
-                                pendingIntent
-                        );
-                    }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+                        && !alarmManager.canScheduleExactAlarms()) {
+
+                    alarmManager.setAndAllowWhileIdle(
+                            AlarmManager.RTC_WAKEUP,
+                            endTime,
+                            pendingIntent);
+
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+
+                    alarmManager.setExactAndAllowWhileIdle(
+                            AlarmManager.RTC_WAKEUP,
+                            endTime,
+                            pendingIntent);
+
                 } else {
                     alarmManager.setExact(
                             AlarmManager.RTC_WAKEUP,
                             endTime,
-                            pendingIntent
-                    );
+                            pendingIntent);
                 }
             }
+
         } catch (Exception e) {
-            android.util.Log.e(
+            Log.e(
                     "BotCooldown",
                     "Error al restaurar alarmas tras reiniciar",
                     e
