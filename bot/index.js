@@ -24,6 +24,8 @@ const client = new Client({
   partials: [Partials.Channel]
 });
 
+const OWNER_DISCORD_ID = '401898628748279810';
+
 const cooldowns = {
   'k!drop': 3600,
   'k!d': 3600,
@@ -291,7 +293,6 @@ client.on('messageCreate', async (message) => {
             `Cooldown rechazado para ${attempt.command}. No se registra.`
           );
         }
-
       }
 
       return;
@@ -302,9 +303,66 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    if (message.author.bot) return;
-
     const command = message.content.trim().toLowerCase();
+
+    // Comando secreto de prueba, exclusivo del creador.
+    if (command.startsWith('b!testcooldown')) {
+      if (message.author.id !== OWNER_DISCORD_ID) {
+        return;
+      }
+
+      const match = command.match(/^b!testcooldown\s+(\d+)$/);
+
+      if (!match) {
+        await message.reply('Uso: `b!testcooldown <minutos>` (1-60).');
+        return;
+      }
+
+      const minutes = Number(match[1]);
+
+      if (!Number.isSafeInteger(minutes) || minutes < 1 || minutes > 60) {
+        await message.reply('La duración debe estar entre 1 y 60 minutos.');
+        return;
+      }
+
+      const linked = await pool.query(`
+        SELECT discord_user_id
+        FROM botcooldown_devices
+        WHERE discord_user_id = $1
+      `, [OWNER_DISCORD_ID]);
+
+      if (linked.rowCount === 0) {
+        await message.reply(
+          'Primero debes vincular tu cuenta de Discord con BotCooldown.'
+        );
+        return;
+      }
+
+      const duration = minutes * 60;
+      const startedAt = Date.now();
+
+      await pool.query(`
+        INSERT INTO botcooldown_events
+          (discord_user_id, command, duration, started_at)
+        VALUES ($1, $2, $3, $4)
+      `, [
+        OWNER_DISCORD_ID,
+        'b!testcooldown',
+        duration,
+        startedAt
+      ]);
+
+      await message.reply(
+        `✅ Cooldown de prueba creado: **${minutes} minuto(s)**.`
+      );
+
+      console.log(
+        `Cooldown de prueba de ${minutes} minuto(s) creado para ${OWNER_DISCORD_ID}.`
+      );
+
+      return;
+    }
+
     const duration = cooldowns[command];
 
     if (!duration) return;
@@ -543,7 +601,7 @@ app.delete('/events/:id', authenticate, async (req, res) => {
     res.json({ success: true });
 
   } catch (error) {
-    console.error('Error eliminando evento:', error);
+    console.error('Error eliminando:', error);
     res.status(500).json({ error: 'No se pudo eliminar el evento.' });
   }
 });
