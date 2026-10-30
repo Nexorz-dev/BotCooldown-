@@ -1,4 +1,3 @@
-
 package com.botcooldown.app;
 
 import android.Manifest;
@@ -67,6 +66,9 @@ public class MainActivity extends Activity {
 
     private static final String PREFS_NAME = "botcooldown_preferences";
     private static final String PREF_MANUAL_TIMERS = "manual_timers";
+    private static final String PREF_SYNCED_IDS = "synced_event_ids";
+
+    private static final int MAX_SAVED_SYNCED_IDS = 500;
 
     private static final String BG = "#04090C";
     private static final int CARD = 0xFF0A1316;
@@ -132,11 +134,13 @@ public class MainActivity extends Activity {
                 (AlarmManager) getSystemService(ALARM_SERVICE);
         preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
 
+        // Recuperar identificadores procesados anteriormente.
+        restoreSyncedIds();
+
         createNotificationChannel();
         requestNotificationPermission();
         buildScreen();
 
-        // Recuperar los temporizadores manuales guardados.
         restoreManualCooldowns();
 
         IntentFilter filter = new IntentFilter(
@@ -158,8 +162,6 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
 
-        // Si el usuario acaba de conceder el permiso de alarmas exactas,
-        // programar de nuevo los temporizadores pendientes.
         if (alarmManager != null && canScheduleExactAlarms()) {
             requestingExactAlarmPermission = false;
 
@@ -172,6 +174,31 @@ public class MainActivity extends Activity {
         }
     }
 
+    // Recupera los identificadores persistentes de eventos de Render.
+    private void restoreSyncedIds() {
+        Set<String> saved = preferences.getStringSet(
+                PREF_SYNCED_IDS, new HashSet<>());
+
+        syncedIds.clear();
+
+        if (saved != null) {
+            syncedIds.addAll(saved);
+        }
+    }
+
+    // Guarda los identificadores para sobrevivir al cierre y reinicio.
+    private void saveSyncedIds() {
+        if (preferences == null) {
+            return;
+        }
+
+        preferences.edit()
+                .putStringSet(
+                        PREF_SYNCED_IDS,
+                        new HashSet<>(syncedIds))
+                .apply();
+    }
+
     private void addSyncedCooldown(
             String command, long endTime, long duration) {
 
@@ -181,10 +208,34 @@ public class MainActivity extends Activity {
             return;
         }
 
-        String eventId = command + ":" + endTime;
+        // Identificador estable para el mismo evento.
+        String eventId = command.trim() + ":" + endTime;
 
-        if (!syncedIds.add(eventId)) {
+        // No crear una segunda tarjeta si ya fue procesado.
+        if (syncedIds.contains(eventId)) {
             return;
+        }
+
+        syncedIds.add(eventId);
+        saveSyncedIds();
+
+        // Limitar el historial para no acumular identificadores sin límite.
+        if (syncedIds.size() > MAX_SAVED_SYNCED_IDS) {
+            Set<String> limited = new HashSet<>();
+            int count = 0;
+
+            for (String id : syncedIds) {
+                if (count >= MAX_SAVED_SYNCED_IDS) {
+                    break;
+                }
+
+                limited.add(id);
+                count++;
+            }
+
+            syncedIds.clear();
+            syncedIds.addAll(limited);
+            saveSyncedIds();
         }
 
         Cooldown c = new Cooldown(command, duration);
@@ -303,7 +354,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    // Comprueba si Android permite programar alarmas exactas.
     private boolean canScheduleExactAlarms() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             return alarmManager != null
@@ -376,7 +426,6 @@ public class MainActivity extends Activity {
 
             } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
 
-                // Alternativa si todavía no se ha concedido el permiso.
                 alarmManager.setAndAllowWhileIdle(
                         AlarmManager.RTC_WAKEUP,
                         c.endTime,
@@ -431,7 +480,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    // Guarda solamente los temporizadores creados manualmente.
     private void saveManualCooldowns() {
         if (preferences == null) {
             return;
@@ -466,7 +514,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    // Recupera los temporizadores manuales al abrir la aplicación.
     private void restoreManualCooldowns() {
         String saved = preferences.getString(PREF_MANUAL_TIMERS, "[]");
 
@@ -493,7 +540,6 @@ public class MainActivity extends Activity {
                 c.alarmRequestCode = alarmId;
                 c.notifyWhenDone = true;
 
-                // Evita que el siguiente temporizador reutilice un ID guardado.
                 if (alarmId >= nextAlarmId && alarmId < 2000000000) {
                     nextAlarmId = alarmId + 1;
                 }
@@ -771,6 +817,7 @@ public class MainActivity extends Activity {
 
             if (c.eventId != null) {
                 syncedIds.remove(c.eventId);
+                saveSyncedIds();
             }
 
             timerList.removeView(c.card);
