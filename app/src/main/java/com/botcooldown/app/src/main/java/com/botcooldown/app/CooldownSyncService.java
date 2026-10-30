@@ -4,6 +4,7 @@ package com.botcooldown.app;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -153,14 +154,12 @@ public class CooldownSyncService extends Service {
         try {
             String token = linkPrefs.getString(PREF_API_TOKEN, "");
 
-            // Sin vinculación no se consultan eventos.
             if (token == null || token.trim().isEmpty()) {
                 return;
             }
 
             String accountHash = tokenHash(token);
 
-            // Detectar si cambió la cuenta vinculada.
             if (!accountHash.equals(activeAccount)) {
                 activeAccount = accountHash;
                 seenEvents.clear();
@@ -209,7 +208,6 @@ public class CooldownSyncService extends Service {
                 }
             }
 
-            // Comprobar que la cuenta no cambió durante la petición.
             String currentToken =
                     linkPrefs.getString(PREF_API_TOKEN, "");
 
@@ -255,8 +253,6 @@ public class CooldownSyncService extends Service {
                     synced.putExtra(EXTRA_COMMAND, command);
                     synced.putExtra(EXTRA_END_TIME, endTime);
                     synced.putExtra(EXTRA_DURATION, durationMillis);
-
-                    // Enviar el ID real de PostgreSQL a MainActivity.
                     synced.putExtra(EXTRA_EVENT_ID, databaseId);
 
                     sendBroadcast(synced);
@@ -300,7 +296,6 @@ public class CooldownSyncService extends Service {
                 String currentToken =
                         linkPrefs.getString(PREF_API_TOKEN, "");
 
-                // No mostrar avisos de una cuenta anterior.
                 if (currentToken == null
                         || currentToken.isEmpty()
                         || !accountHash.equals(tokenHash(currentToken))) {
@@ -314,6 +309,31 @@ public class CooldownSyncService extends Service {
                     return;
                 }
 
+                int notificationId =
+                        eventId.hashCode() & 0x7fffffff;
+
+                Intent openAppIntent =
+                        new Intent(this, MainActivity.class);
+
+                openAppIntent.setFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK
+                                | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                                | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+
+                int pendingIntentFlags =
+                        PendingIntent.FLAG_UPDATE_CURRENT;
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    pendingIntentFlags |= PendingIntent.FLAG_IMMUTABLE;
+                }
+
+                PendingIntent contentIntent =
+                        PendingIntent.getActivity(
+                                this,
+                                notificationId,
+                                openAppIntent,
+                                pendingIntentFlags);
+
                 Notification notification;
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -324,6 +344,7 @@ public class CooldownSyncService extends Service {
                                     .setContentTitle("BotCooldown")
                                     .setContentText(
                                             command + " ya está disponible")
+                                    .setContentIntent(contentIntent)
                                     .setAutoCancel(true)
                                     .build();
                 } else {
@@ -334,12 +355,10 @@ public class CooldownSyncService extends Service {
                                     .setContentTitle("BotCooldown")
                                     .setContentText(
                                             command + " ya está disponible")
+                                    .setContentIntent(contentIntent)
                                     .setAutoCancel(true)
                                     .build();
                 }
-
-                int notificationId =
-                        eventId.hashCode() & 0x7fffffff;
 
                 notificationManager.notify(
                         notificationId, notification);
