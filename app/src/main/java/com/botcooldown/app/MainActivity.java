@@ -450,7 +450,6 @@ public class MainActivity extends Activity {
                 .setNeutralButton("Copiar código", null)
                 .create();
 
-        // Aplicar el fondo antes de mostrar el diálogo.
         if (dialog.getWindow() != null) {
             dialog.getWindow().setBackgroundDrawable(
                     shape(CARD, GREEN, 18));
@@ -493,6 +492,61 @@ public class MainActivity extends Activity {
 
             if (close != null) {
                 close.setTextColor(GOLD);
+            }
+        });
+
+        dialog.show();
+    }
+
+    // DIÁLOGO DE CONFIRMACIÓN PARA DESVINCULAR DISCORD
+    private void showUnlinkConfirmationDialog() {
+        LinearLayout layout = vertical();
+        layout.setPadding(dp(22), dp(18), dp(22), dp(18));
+        layout.setBackground(shape(
+                Color.parseColor(BG), 0xFF17432A, 16));
+
+        TextView message = text(
+                "¿Seguro que quieres desvincular esta cuenta?\n\n"
+                        + "Los temporizadores manuales seguirán funcionando.",
+                14, WHITE, false);
+
+        layout.addView(message);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Desvincular Discord")
+                .setView(layout)
+                .setNegativeButton("Cancelar", null)
+                .setPositiveButton("Desvincular",
+                        (d, w) -> unlinkDiscord())
+                .create();
+
+        dialog.setOnShowListener(d -> {
+            int titleId = getResources().getIdentifier(
+                    "alertTitle", "id", "android");
+
+            TextView title = dialog.findViewById(titleId);
+
+            if (title != null) {
+                title.setTextColor(GREEN);
+            }
+
+            Button cancel = dialog.getButton(
+                    AlertDialog.BUTTON_NEGATIVE);
+
+            Button unlink = dialog.getButton(
+                    AlertDialog.BUTTON_POSITIVE);
+
+            if (cancel != null) {
+                cancel.setTextColor(GOLD);
+            }
+
+            if (unlink != null) {
+                unlink.setTextColor(0xFFFF8585);
+            }
+
+            if (dialog.getWindow() != null) {
+                dialog.getWindow().setBackgroundDrawable(
+                        shape(CARD, GREEN, 18));
             }
         });
 
@@ -1089,15 +1143,7 @@ public class MainActivity extends Activity {
         discordCard.addView(unlinkButton, unlinkParams);
 
         unlinkButton.setOnClickListener(v ->
-                new AlertDialog.Builder(this)
-                        .setTitle("Desvincular Discord")
-                        .setMessage(
-                                "¿Seguro que quieres desvincular esta cuenta? "
-                                        + "Los temporizadores manuales seguirán funcionando.")
-                        .setNegativeButton("Cancelar", null)
-                        .setPositiveButton("Desvincular",
-                                (dialog, which) -> unlinkDiscord())
-                        .show());
+                showUnlinkConfirmationDialog());
 
         updateDiscordStatus(!getApiToken().isEmpty());
 
