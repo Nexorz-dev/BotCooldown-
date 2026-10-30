@@ -36,6 +36,7 @@ public class CooldownSyncService extends Service {
     public static final String EXTRA_COMMAND = "command";
     public static final String EXTRA_END_TIME = "endTime";
     public static final String EXTRA_DURATION = "duration";
+    public static final String EXTRA_EVENT_ID = "eventId";
 
     private static final String TAG = "CooldownSync";
     private static final String SERVICE_CHANNEL = "cooldown_sync";
@@ -227,6 +228,7 @@ public class CooldownSyncService extends Service {
                 long startedAt = event.optLong("startedAt", 0L);
 
                 if (command.trim().isEmpty()
+                        || databaseId.isEmpty()
                         || durationSeconds <= 0
                         || startedAt <= 0
                         || durationSeconds > Long.MAX_VALUE / 1000L) {
@@ -243,9 +245,7 @@ public class CooldownSyncService extends Service {
                 long remainingMillis =
                         endTime - System.currentTimeMillis();
 
-                String eventId = !databaseId.isEmpty()
-                        ? accountHash + ":" + databaseId
-                        : accountHash + ":" + command + ":" + startedAt;
+                String eventId = accountHash + ":" + databaseId;
 
                 if (seenEvents.add(eventId)) {
                     saveSeenEvents();
@@ -255,6 +255,9 @@ public class CooldownSyncService extends Service {
                     synced.putExtra(EXTRA_COMMAND, command);
                     synced.putExtra(EXTRA_END_TIME, endTime);
                     synced.putExtra(EXTRA_DURATION, durationMillis);
+
+                    // Enviar el ID real de PostgreSQL a MainActivity.
+                    synced.putExtra(EXTRA_EVENT_ID, databaseId);
 
                     sendBroadcast(synced);
                 }
