@@ -1,4 +1,3 @@
-
 package com.botcooldown.app;
 
 import android.Manifest;
@@ -75,6 +74,7 @@ public class MainActivity extends Activity {
     private static int nextAlarmId = 1000;
     private boolean requestingExactAlarmPermission = false;
     private boolean pollingForLink = false;
+    private boolean backgroundSetupDialogShowing = false;
 
     private String currentLinkCode = "";
     private long linkExpiresAt = 0L;
@@ -95,6 +95,9 @@ public class MainActivity extends Activity {
     private static final String PREFS_NAME = "botcooldown_preferences";
     private static final String PREF_MANUAL_TIMERS = "manual_timers";
     private static final String PREF_SYNCED_IDS = "synced_event_ids_";
+
+    private static final String PREF_BACKGROUND_SETUP_CONFIRMED =
+            "background_setup_confirmed";
 
     private static final String LINK_PREFS = "botcooldown_link";
     private static final String PREF_INSTALLATION_ID = "installation_id";
@@ -220,6 +223,8 @@ public class MainActivity extends Activity {
         handler.post(tick);
 
         checkLinkStatus(false);
+
+        handler.post(this::showBackgroundSetupDialogIfNeeded);
     }
 
     @Override
@@ -238,6 +243,125 @@ public class MainActivity extends Activity {
         }
 
         checkLinkStatus(false);
+
+        showBackgroundSetupDialogIfNeeded();
+    }
+
+    private void showBackgroundSetupDialogIfNeeded() {
+        if (preferences == null
+                || preferences.getBoolean(
+                        PREF_BACKGROUND_SETUP_CONFIRMED, false)
+                || backgroundSetupDialogShowing
+                || isFinishing()
+                || isDestroyed()) {
+            return;
+        }
+
+        backgroundSetupDialogShowing = true;
+
+        LinearLayout layout = vertical();
+        layout.setPadding(dp(22), dp(18), dp(22), dp(18));
+        layout.setBackground(shape(
+                Color.parseColor(BG), 0xFF17432A, 16));
+
+        TextView message = text(
+                "Para que BotCooldown funcione correctamente, "
+                        + "necesita poder mantenerse activa en segundo plano.\n\n"
+                        + "Esto permite que la aplicación siga controlando "
+                        + "los tiempos de espera y pueda mostrar las "
+                        + "notificaciones cuando un cooldown termine, "
+                        + "incluso si no estás utilizando la aplicación "
+                        + "o tienes la pantalla apagada.\n\n"
+                        + "Si restringes esta actividad, algunas "
+                        + "notificaciones podrían retrasarse o no llegar "
+                        + "a tiempo.\n\n"
+                        + "Para disfrutar de todas las funciones de "
+                        + "BotCooldown, permite la actividad en segundo "
+                        + "plano desde los ajustes de batería de tu dispositivo.",
+                14, WHITE, false);
+
+        layout.addView(message);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Actividad en segundo plano")
+                .setView(layout)
+                .setPositiveButton("Configurar ahora", null)
+                .setNegativeButton("Ya lo activé", null)
+                .create();
+
+        // Configurar el fondo antes de mostrar el diálogo.
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setBackgroundDrawable(
+                    shape(CARD, GREEN, 18));
+        }
+
+        dialog.setCancelable(false);
+
+        dialog.setOnDismissListener(d ->
+                backgroundSetupDialogShowing = false);
+
+        dialog.setOnShowListener(d -> {
+            int titleId = getResources().getIdentifier(
+                    "alertTitle", "id", "android");
+
+            TextView title = dialog.findViewById(titleId);
+
+            if (title != null) {
+                title.setTextColor(GREEN);
+            }
+
+            Button configure = dialog.getButton(
+                    AlertDialog.BUTTON_POSITIVE);
+
+            Button confirmed = dialog.getButton(
+                    AlertDialog.BUTTON_NEGATIVE);
+
+            if (configure != null) {
+                configure.setTextColor(GREEN);
+
+                configure.setOnClickListener(v -> {
+                    try {
+                        Intent intent = new Intent(
+                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+
+                        intent.setData(Uri.parse(
+                                "package:" + getPackageName()));
+
+                        dialog.dismiss();
+                        startActivity(intent);
+
+                    } catch (Exception e) {
+                        dialog.dismiss();
+
+                        Toast.makeText(
+                                MainActivity.this,
+                                "No se pudieron abrir los ajustes de la aplicación",
+                                Toast.LENGTH_LONG).show();
+                    }
+                });
+            }
+
+            if (confirmed != null) {
+                confirmed.setTextColor(GOLD);
+
+                confirmed.setOnClickListener(v -> {
+                    preferences.edit()
+                            .putBoolean(
+                                    PREF_BACKGROUND_SETUP_CONFIRMED,
+                                    true)
+                            .apply();
+
+                    dialog.dismiss();
+
+                    Toast.makeText(
+                            MainActivity.this,
+                            "Configuración confirmada",
+                            Toast.LENGTH_SHORT).show();
+                });
+            }
+        });
+
+        dialog.show();
     }
 
     private void getOrCreateInstallationCredentials() {
