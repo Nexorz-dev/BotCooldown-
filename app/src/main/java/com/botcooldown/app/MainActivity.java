@@ -520,6 +520,12 @@ public class MainActivity extends Activity {
                         (d, w) -> unlinkDiscord())
                 .create();
 
+        // APLICAR EL FONDO OSCURO ANTES DE MOSTRAR EL DIÁLOGO
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setBackgroundDrawable(
+                    shape(CARD, GREEN, 18));
+        }
+
         dialog.setOnShowListener(d -> {
             int titleId = getResources().getIdentifier(
                     "alertTitle", "id", "android");
@@ -542,11 +548,6 @@ public class MainActivity extends Activity {
 
             if (unlink != null) {
                 unlink.setTextColor(0xFFFF8585);
-            }
-
-            if (dialog.getWindow() != null) {
-                dialog.getWindow().setBackgroundDrawable(
-                        shape(CARD, GREEN, 18));
             }
         });
 
