@@ -43,6 +43,8 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -76,6 +78,7 @@ public class MainActivity extends Activity {
 
     private String currentLinkCode = "";
     private long linkExpiresAt = 0L;
+    private String syncedAccount = "";
 
     private final Handler linkHandler = new Handler(Looper.getMainLooper());
 
@@ -91,7 +94,7 @@ public class MainActivity extends Activity {
 
     private static final String PREFS_NAME = "botcooldown_preferences";
     private static final String PREF_MANUAL_TIMERS = "manual_timers";
-    private static final String PREF_SYNCED_IDS = "synced_event_ids";
+    private static final String PREF_SYNCED_IDS = "synced_event_ids_";
 
     private static final String LINK_PREFS = "botcooldown_link";
     private static final String PREF_INSTALLATION_ID = "installation_id";
@@ -110,6 +113,7 @@ public class MainActivity extends Activity {
     private static class Cooldown {
         String command;
         String eventId;
+        String serverEventId;
         long endTime;
         long durationMillis;
         int alarmRequestCode;
@@ -146,8 +150,11 @@ public class MainActivity extends Activity {
                     CooldownSyncService.EXTRA_END_TIME, 0L);
             long duration = intent.getLongExtra(
                     CooldownSyncService.EXTRA_DURATION, 0L);
+            String databaseId = intent.getStringExtra(
+                    CooldownSyncService.EXTRA_EVENT_ID);
 
-            addSyncedCooldown(command, endTime, duration);
+            addSyncedCooldown(
+                    command, endTime, duration, databaseId);
         }
     };
 
@@ -265,6 +272,42 @@ public class MainActivity extends Activity {
         return linkPreferences.getString(PREF_API_TOKEN, "");
     }
 
+    private String tokenHash(String token) {
+        if (token == null || token.isEmpty()) {
+            return "";
+        }
+
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] bytes = digest.digest(
+                    token.getBytes(StandardCharsets.UTF_8));
+
+            StringBuilder result = new StringBuilder();
+
+            for (byte b : bytes) {
+                result.append(String.format(Locale.US, "%02x", b & 0xff));
+            }
+
+            return result.toString();
+
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private String getSyncedIdsPreferenceKey() {
+        return PREF_SYNCED_IDS + tokenHash(getApiToken());
+    }
+
+    private void reloadSyncedIdsForCurrentAccount() {
+        String account = tokenHash(getApiToken());
+
+        if (!account.equals(syncedAccount)) {
+            syncedAccount = account;
+            restoreSyncedIds();
+        }
+    }
+
     private JSONObject postJson(String endpoint, JSONObject body, String token)
             throws Exception {
 
@@ -321,6 +364,38 @@ public class MainActivity extends Activity {
             response.put("_httpCode", responseCode);
 
             return response;
+
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
+        }
+    }
+
+    private boolean deleteSyncedEvent(String databaseId, String token)
+            throws Exception {
+
+        if (databaseId == null || databaseId.trim().isEmpty()
+                || token == null || token.trim().isEmpty()) {
+            return false;
+        }
+
+        HttpURLConnection connection = null;
+
+        try {
+            connection = (HttpURLConnection)
+                    new URL(EVENTS_URL + "/" + databaseId).openConnection();
+
+            connection.setRequestMethod("DELETE");
+            connection.setConnectTimeout(10000);
+            connection.setReadTimeout(10000);
+            connection.setRequestProperty("Accept", "application/json");
+            connection.setRequestProperty(
+                    "Authorization", "Bearer " + token);
+
+            int responseCode = connection.getResponseCode();
+
+            return responseCode >= 200 && responseCode < 300;
 
         } finally {
             if (connection != null) {
@@ -520,7 +595,6 @@ public class MainActivity extends Activity {
                         (d, w) -> unlinkDiscord())
                 .create();
 
-        // APLICAR EL FONDO OSCURO ANTES DE MOSTRAR EL DIÁLOGO
         if (dialog.getWindow() != null) {
             dialog.getWindow().setBackgroundDrawable(
                     shape(CARD, GREEN, 18));
@@ -572,13 +646,21 @@ public class MainActivity extends Activity {
                 String token = response.optString("token", "");
 
                 if (linked && !token.isEmpty()) {
+                    String previousToken = getApiToken();
+
                     linkPreferences.edit()
                             .putString(PREF_API_TOKEN, token)
                             .apply();
 
+                    boolean accountChanged = !previousToken.equals(token);
+
                     handler.post(() -> {
                         if (isFinishing() || isDestroyed()) {
                             return;
+                        }
+
+                        if (accountChanged) {
+                            reloadSyncedIdsForCurrentAccount();
                         }
 
                         pollingForLink = false;
@@ -605,6 +687,7 @@ public class MainActivity extends Activity {
                                 .apply();
 
                         handler.post(() -> {
+                            reloadSyncedIdsForCurrentAccount();
                             updateDiscordStatus(false);
                             stopService(new Intent(
                                     MainActivity.this,
@@ -661,6 +744,8 @@ public class MainActivity extends Activity {
                     linkPreferences.edit()
                             .remove(PREF_API_TOKEN)
                             .apply();
+
+                    reloadSyncedIdsForCurrentAccount();
 
                     pollingForLink = false;
                     linkHandler.removeCallbacks(linkPoll);
@@ -720,8 +805,10 @@ public class MainActivity extends Activity {
     }
 
     private void restoreSyncedIds() {
+        syncedAccount = tokenHash(getApiToken());
+
         Set<String> saved = preferences.getStringSet(
-                PREF_SYNCED_IDS, new HashSet<>());
+                getSyncedIdsPreferenceKey(), new HashSet<>());
 
         syncedIds.clear();
 
@@ -737,21 +824,27 @@ public class MainActivity extends Activity {
 
         preferences.edit()
                 .putStringSet(
-                        PREF_SYNCED_IDS,
+                        getSyncedIdsPreferenceKey(),
                         new HashSet<>(syncedIds))
                 .apply();
     }
 
     private void addSyncedCooldown(
-            String command, long endTime, long duration) {
+            String command,
+            long endTime,
+            long duration,
+            String databaseId) {
 
         if (command == null || command.trim().isEmpty()
+                || databaseId == null || databaseId.trim().isEmpty()
                 || endTime <= System.currentTimeMillis()
                 || duration <= 0) {
             return;
         }
 
-        String eventId = command.trim() + ":" + endTime;
+        reloadSyncedIdsForCurrentAccount();
+
+        String eventId = tokenHash(getApiToken()) + ":" + databaseId;
 
         for (Cooldown existing : cooldowns) {
             if (eventId.equals(existing.eventId)) {
@@ -759,35 +852,107 @@ public class MainActivity extends Activity {
             }
         }
 
-        if (syncedIds.add(eventId)) {
-            if (syncedIds.size() > MAX_SAVED_SYNCED_IDS) {
-                Set<String> limited = new HashSet<>();
-                int count = 0;
+        if (syncedIds.contains(eventId)) {
+            return;
+        }
 
-                for (String id : syncedIds) {
-                    if (count >= MAX_SAVED_SYNCED_IDS) {
-                        break;
-                    }
+        syncedIds.add(eventId);
 
-                    limited.add(id);
-                    count++;
+        if (syncedIds.size() > MAX_SAVED_SYNCED_IDS) {
+            Set<String> limited = new HashSet<>();
+            int count = 0;
+
+            for (String id : syncedIds) {
+                if (count >= MAX_SAVED_SYNCED_IDS) {
+                    break;
                 }
 
-                syncedIds.clear();
-                syncedIds.addAll(limited);
+                limited.add(id);
+                count++;
             }
 
-            saveSyncedIds();
+            syncedIds.clear();
+            syncedIds.addAll(limited);
         }
+
+        saveSyncedIds();
 
         Cooldown c = new Cooldown(command, duration);
         c.endTime = endTime;
         c.eventId = eventId;
+        c.serverEventId = databaseId;
         c.notifyWhenDone = false;
 
         createCooldownCard(c);
         cooldowns.add(c);
         updateCooldown(c);
+    }
+
+    private void removeCooldownFromScreen(Cooldown c) {
+        cancelManualAlarm(c);
+        cooldowns.remove(c);
+
+        if (c.eventId != null) {
+            syncedIds.remove(c.eventId);
+            saveSyncedIds();
+        }
+
+        timerList.removeView(c.card);
+        saveManualCooldowns();
+    }
+
+    private void deleteSyncedCooldown(Cooldown c, Button deleteButton) {
+        String token = getApiToken();
+
+        if (token.isEmpty() || c.serverEventId == null
+                || c.serverEventId.trim().isEmpty()) {
+            Toast.makeText(
+                    this,
+                    "No se pudo identificar el evento en el servidor.",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        deleteButton.setEnabled(false);
+        deleteButton.setText("Eliminando...");
+
+        new Thread(() -> {
+            boolean success = false;
+
+            try {
+                success = deleteSyncedEvent(c.serverEventId, token);
+            } catch (Exception e) {
+                android.util.Log.e(
+                        "BotCooldown",
+                        "Error al eliminar evento sincronizado", e);
+            }
+
+            final boolean result = success;
+
+            handler.post(() -> {
+                if (isFinishing() || isDestroyed()) {
+                    return;
+                }
+
+                if (result) {
+                    removeCooldownFromScreen(c);
+
+                    Toast.makeText(
+                            MainActivity.this,
+                            "Cooldown eliminado",
+                            Toast.LENGTH_SHORT).show();
+
+                } else {
+                    deleteButton.setEnabled(true);
+                    deleteButton.setText("Eliminar");
+
+                    Toast.makeText(
+                            MainActivity.this,
+                            "No se pudo eliminar el evento del servidor. Inténtalo nuevamente.",
+                            Toast.LENGTH_LONG).show();
+                }
+            });
+        }).start();
     }
 
     private void startCooldownSyncService() {
@@ -1322,16 +1487,11 @@ public class MainActivity extends Activity {
         });
 
         delete.setOnClickListener(v -> {
-            cancelManualAlarm(c);
-            cooldowns.remove(c);
-
-            if (c.eventId != null) {
-                syncedIds.remove(c.eventId);
-                saveSyncedIds();
+            if (c.serverEventId != null) {
+                deleteSyncedCooldown(c, delete);
+            } else {
+                removeCooldownFromScreen(c);
             }
-
-            timerList.removeView(c.card);
-            saveManualCooldowns();
         });
     }
 
