@@ -1,3 +1,4 @@
+
 package com.botcooldown.app;
 
 import android.Manifest;
@@ -104,6 +105,7 @@ public class MainActivity extends Activity {
     private static final String PREFS_NAME = "botcooldown_preferences";
     private static final String PREF_MANUAL_TIMERS = "manual_timers";
     private static final String PREF_SYNCED_IDS = "synced_event_ids_";
+    private static final String PREF_SYNCED_TIMERS = "synced_timers_";
     private static final String PREF_ACCENT_COLOR = "accent_color";
 
     private static final String PREF_BACKGROUND_SETUP_CONFIRMED =
@@ -235,6 +237,7 @@ public class MainActivity extends Activity {
         requestNotificationPermission();
         buildScreen();
 
+        restoreSyncedCooldowns();
         restoreManualCooldowns();
 
         IntentFilter filter = new IntentFilter(
@@ -292,19 +295,10 @@ public class MainActivity extends Activity {
                 .apply();
     }
 
-    /*
-     * Reconstruye la interfaz sin reiniciar MainActivity.
-     * Los objetos Cooldown permanecen en memoria, por lo que
-     * conservan sus tiempos, identificadores y estados.
-     */
     private void refreshScreenWithNewAccent() {
-        // La barra inferior vuelve a su estado inicial.
         bottomBarVisible = false;
-
-        // Reconstruye la pantalla con el nuevo color.
         buildScreen();
 
-        // Vuelve a dibujar todos los temporizadores existentes.
         for (Cooldown c : cooldowns) {
             createCooldownCard(c);
 
@@ -317,7 +311,6 @@ public class MainActivity extends Activity {
             }
         }
 
-        // Mantiene actualizado el estado de Discord.
         updateDiscordStatus(!getApiToken().isEmpty());
     }
 
@@ -610,10 +603,7 @@ public class MainActivity extends Activity {
                     });
 
                     saveAccentColor(newColor);
-
                     colorDialog.dismiss();
-
-                    // Actualiza la interfaz sin reiniciar la actividad.
                     refreshScreenWithNewAccent();
                 });
             }
@@ -774,6 +764,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+
+        reloadSyncedIdsForCurrentAccount();
 
         if (alarmManager != null && canScheduleExactAlarms()) {
             requestingExactAlarmPermission = false;
@@ -970,12 +962,38 @@ public class MainActivity extends Activity {
         return PREF_SYNCED_IDS + tokenHash(getApiToken());
     }
 
+    private String getSyncedTimersPreferenceKey() {
+        return PREF_SYNCED_TIMERS + tokenHash(getApiToken());
+    }
+
     private void reloadSyncedIdsForCurrentAccount() {
         String account = tokenHash(getApiToken());
 
         if (!account.equals(syncedAccount)) {
+            // Retira de la pantalla los temporizadores de la cuenta anterior.
+            ArrayList<Cooldown> previousSynced = new ArrayList<>();
+
+            for (Cooldown c : cooldowns) {
+                if (c.serverEventId != null) {
+                    previousSynced.add(c);
+                }
+            }
+
+            for (Cooldown c : previousSynced) {
+                cooldowns.remove(c);
+
+                if (timerList != null && c.card != null) {
+                    timerList.removeView(c.card);
+                }
+            }
+
+            // No se eliminan las preferencias de la cuenta anterior.
             syncedAccount = account;
             restoreSyncedIds();
+
+            if (!account.isEmpty() && timerList != null) {
+                restoreSyncedCooldowns();
+            }
         }
     }
 
@@ -1478,6 +1496,10 @@ public class MainActivity extends Activity {
     // =========================================================
 
     private void restoreSyncedIds() {
+        if (preferences == null) {
+            return;
+        }
+
         syncedAccount = tokenHash(getApiToken());
 
         Set<String> saved = preferences.getStringSet(
@@ -1502,6 +1524,134 @@ public class MainActivity extends Activity {
                 .apply();
     }
 
+    private void saveSyncedCooldowns() {
+        if (preferences == null) {
+            return;
+        }
+
+        String token = getApiToken();
+
+        if (token == null || token.trim().isEmpty()) {
+            return;
+        }
+
+        JSONArray array = new JSONArray();
+        long now = System.currentTimeMillis();
+
+        try {
+            for (Cooldown c : cooldowns) {
+                if (c.serverEventId == null
+                        || c.serverEventId.trim().isEmpty()
+                        || c.endTime <= now) {
+                    continue;
+                }
+
+                JSONObject item = new JSONObject();
+                item.put("command", c.command);
+                item.put("databaseId", c.serverEventId);
+                item.put("durationMillis", c.durationMillis);
+                item.put("endTime", c.endTime);
+
+                array.put(item);
+            }
+
+            preferences.edit()
+                    .putString(
+                            getSyncedTimersPreferenceKey(),
+                            array.toString())
+                    .apply();
+
+        } catch (Exception e) {
+            android.util.Log.e(
+                    "BotCooldown",
+                    "No se pudieron guardar los temporizadores sincronizados",
+                    e);
+        }
+    }
+
+    private void restoreSyncedCooldowns() {
+        if (preferences == null || timerList == null) {
+            return;
+        }
+
+        String token = getApiToken();
+
+        if (token == null || token.trim().isEmpty()) {
+            return;
+        }
+
+        String accountHash = tokenHash(token);
+
+        if (accountHash.isEmpty()) {
+            return;
+        }
+
+        String saved = preferences.getString(
+                PREF_SYNCED_TIMERS + accountHash, "[]");
+
+        try {
+            JSONArray array = new JSONArray(saved);
+            long now = System.currentTimeMillis();
+
+            for (int i = 0; i < array.length(); i++) {
+                JSONObject item = array.optJSONObject(i);
+
+                if (item == null) {
+                    continue;
+                }
+
+                String command = item.optString("command", "");
+                String databaseId = item.optString("databaseId", "");
+                long duration = item.optLong("durationMillis", 0L);
+                long endTime = item.optLong("endTime", 0L);
+
+                if (command.trim().isEmpty()
+                        || databaseId.trim().isEmpty()
+                        || duration <= 0
+                        || endTime <= now) {
+                    continue;
+                }
+
+                String eventId = accountHash + ":" + databaseId;
+
+                boolean alreadyExists = false;
+
+                for (Cooldown existing : cooldowns) {
+                    if (eventId.equals(existing.eventId)) {
+                        alreadyExists = true;
+                        break;
+                    }
+                }
+
+                if (alreadyExists) {
+                    continue;
+                }
+
+                Cooldown c = new Cooldown(command, duration);
+                c.endTime = endTime;
+                c.eventId = eventId;
+                c.serverEventId = databaseId;
+                c.notifyWhenDone = false;
+
+                createCooldownCard(c);
+                cooldowns.add(c);
+
+                syncedIds.add(eventId);
+
+                updateCooldown(c);
+            }
+
+            saveSyncedIds();
+            saveSyncedCooldowns();
+
+        } catch (Exception e) {
+            android.util.Log.e(
+                    "BotCooldown",
+                    "Error al restaurar temporizadores sincronizados",
+                    e);
+        }
+    }
+
     private void addSyncedCooldown(
             String command,
             long endTime,
@@ -1511,23 +1661,41 @@ public class MainActivity extends Activity {
         if (command == null || command.trim().isEmpty()
                 || databaseId == null || databaseId.trim().isEmpty()
                 || endTime <= System.currentTimeMillis()
-                || duration <= 0) {
+                || duration <= 0
+                || getApiToken().trim().isEmpty()) {
             return;
         }
 
         reloadSyncedIdsForCurrentAccount();
 
-        String eventId = tokenHash(getApiToken()) + ":" + databaseId;
+        String accountHash = tokenHash(getApiToken());
+
+        if (accountHash.isEmpty()) {
+            return;
+        }
+
+        String eventId = accountHash + ":" + databaseId;
 
         for (Cooldown existing : cooldowns) {
             if (eventId.equals(existing.eventId)) {
+                // El evento ya existe. Actualiza su tiempo si cambió.
+                existing.endTime = endTime;
+                existing.durationMillis = duration;
+                existing.notified = false;
+                updateCooldown(existing);
+                saveSyncedCooldowns();
                 return;
             }
         }
 
-        if (syncedIds.contains(eventId)) {
-            return;
-        }
+        Cooldown c = new Cooldown(command, duration);
+        c.endTime = endTime;
+        c.eventId = eventId;
+        c.serverEventId = databaseId;
+        c.notifyWhenDone = false;
+
+        createCooldownCard(c);
+        cooldowns.add(c);
 
         syncedIds.add(eventId);
 
@@ -1549,15 +1717,7 @@ public class MainActivity extends Activity {
         }
 
         saveSyncedIds();
-
-        Cooldown c = new Cooldown(command, duration);
-        c.endTime = endTime;
-        c.eventId = eventId;
-        c.serverEventId = databaseId;
-        c.notifyWhenDone = false;
-
-        createCooldownCard(c);
-        cooldowns.add(c);
+        saveSyncedCooldowns();
         updateCooldown(c);
     }
 
@@ -1565,13 +1725,20 @@ public class MainActivity extends Activity {
         cancelManualAlarm(c);
         cooldowns.remove(c);
 
-        if (c.eventId != null) {
-            syncedIds.remove(c.eventId);
+        if (c.serverEventId != null) {
+            if (c.eventId != null) {
+                syncedIds.remove(c.eventId);
+            }
+
             saveSyncedIds();
+            saveSyncedCooldowns();
+        } else {
+            saveManualCooldowns();
         }
 
-        timerList.removeView(c.card);
-        saveManualCooldowns();
+        if (timerList != null && c.card != null) {
+            timerList.removeView(c.card);
+        }
     }
 
     private void deleteSyncedCooldown(Cooldown c, Button deleteButton) {
@@ -2226,8 +2393,14 @@ public class MainActivity extends Activity {
             c.endTime = System.currentTimeMillis() + c.durationMillis;
             c.notified = false;
 
-            saveManualCooldowns();
-            scheduleManualAlarm(c);
+            if (c.serverEventId != null) {
+                c.notifyWhenDone = false;
+                saveSyncedCooldowns();
+            } else {
+                saveManualCooldowns();
+                scheduleManualAlarm(c);
+            }
+
             updateCooldown(c);
         });
 
@@ -2244,10 +2417,13 @@ public class MainActivity extends Activity {
         @Override
         public void run() {
             long now = System.currentTimeMillis();
+            ArrayList<Cooldown> expiredSynced = new ArrayList<>();
 
             for (Cooldown c : cooldowns) {
                 if (now >= c.endTime) {
-                    if (!c.notified) {
+                    if (c.serverEventId != null) {
+                        expiredSynced.add(c);
+                    } else if (!c.notified) {
                         c.notified = true;
                         c.view.setText("✓  DISPONIBLE");
                         c.view.setTextColor(GREEN);
@@ -2257,11 +2433,32 @@ public class MainActivity extends Activity {
                 }
             }
 
+            if (!expiredSynced.isEmpty()) {
+                for (Cooldown c : expiredSynced) {
+                    cooldowns.remove(c);
+
+                    if (timerList != null && c.card != null) {
+                        timerList.removeView(c.card);
+                    }
+
+                    if (c.eventId != null) {
+                        syncedIds.remove(c.eventId);
+                    }
+                }
+
+                saveSyncedIds();
+                saveSyncedCooldowns();
+            }
+
             handler.postDelayed(this, 1000);
         }
     };
 
     private void updateCooldown(Cooldown c) {
+        if (c.view == null) {
+            return;
+        }
+
         long remaining = Math.max(
                 0, (c.endTime - System.currentTimeMillis()) / 1000);
 
