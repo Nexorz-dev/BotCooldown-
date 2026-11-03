@@ -2187,6 +2187,7 @@ public class MainActivity extends Activity {
 
     private void requestExactAlarmPermission() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S
+                || canScheduleExactAlarms()
                 || requestingExactAlarmPermission) {
             return;
         }
@@ -2195,20 +2196,40 @@ public class MainActivity extends Activity {
 
         Toast.makeText(
                 this,
-                "Activa el permiso de alarmas exactas para mayor precisión",
+                "BotCooldown necesita permiso de alarmas exactas. Actívalo para recibir avisos puntuales.",
                 Toast.LENGTH_LONG).show();
 
-        try {
-            Intent intent = new Intent(
-                    Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM);
-            intent.setData(Uri.parse("package:" + getPackageName()));
-            startActivity(intent);
-        } catch (Exception e) {
-            requestingExactAlarmPermission = false;
+        Uri appUri = Uri.parse("package:" + getPackageName());
 
+        try {
+            Intent exactAlarmIntent = new Intent(
+                    Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM);
+            exactAlarmIntent.setData(appUri);
+            startActivity(exactAlarmIntent);
+            return;
+        } catch (Exception exactAlarmError) {
+            android.util.Log.w(
+                    "BotCooldown",
+                    "No se pudo abrir el ajuste de alarmas exactas",
+                    exactAlarmError);
+        }
+
+        // Algunos fabricantes no implementan la pantalla específica.
+        // Como alternativa, abrir los ajustes generales de esta aplicación.
+        try {
+            Intent appSettingsIntent = new Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+            appSettingsIntent.setData(appUri);
+            startActivity(appSettingsIntent);
+        } catch (Exception appSettingsError) {
+            requestingExactAlarmPermission = false;
+            android.util.Log.e(
+                    "BotCooldown",
+                    "No se pudieron abrir los ajustes de la aplicación",
+                    appSettingsError);
             Toast.makeText(
                     this,
-                    "Activa las alarmas exactas en los ajustes de la app",
+                    "Abre Ajustes > Aplicaciones > BotCooldown y busca Alarmas y recordatorios.",
                     Toast.LENGTH_LONG).show();
         }
     }
