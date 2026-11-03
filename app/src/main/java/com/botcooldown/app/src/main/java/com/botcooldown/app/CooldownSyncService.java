@@ -1,6 +1,8 @@
 package com.botcooldown.app;
 
+import android.app.AlarmManager;
 import android.app.Notification;
+import android.app.PendingIntent;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
@@ -39,6 +41,8 @@ public class CooldownSyncService extends Service {
     private static final String LINK_PREFS = "botcooldown_link";
     private static final String PREF_API_TOKEN = "api_token";
     private static final String PREFS_NAME = "botcooldown_sync";
+    private static final String COOLDOWN_PREFS = "botcooldown_preferences";
+    private static final String PREF_SYNCED_TIMERS_PREFIX = "synced_timers_";
     private static final String PREFS_SEEN = "service_seen_events";
     private static final String PREF_ACCOUNT = "service_account";
     private ScheduledExecutorService executor;
@@ -140,6 +144,13 @@ public class CooldownSyncService extends Service {
                 if (startedAt > Long.MAX_VALUE - duration) continue;
                 long endTime = startedAt + duration;
                 String eventId = accountHash + ":" + databaseId;
+
+                // Persist and schedule synced alarms inside the foreground service.
+                // The Activity's dynamically registered receiver may not exist
+                // while the app is in the background or its screen is closed.
+                persistAndScheduleSyncedAlarm(command, databaseId, duration,
+                        endTime, accountHash);
+
                 if (seenEvents.add(eventId)) saveSeenEvents();
                 Intent synced = new Intent(ACTION_COOLDOWN_SYNCED);
                 synced.setPackage(getPackageName());
@@ -153,6 +164,85 @@ public class CooldownSyncService extends Service {
             Log.e(TAG, "Error al sincronizar con Render", e);
         } finally {
             if (connection != null) connection.disconnect();
+        }
+    }
+
+    private void persistAndScheduleSyncedAlarm(String command, String databaseId,
+                                               long duration, long endTime,
+                                               String accountHash) {
+        if (command == null || command.trim().isEmpty()
+                || databaseId == null || databaseId.trim().isEmpty()
+                || accountHash == null || accountHash.isEmpty()
+                || duration <= 0 || endTime <= System.currentTimeMillis()) {
+            return;
+        }
+
+        int alarmId = 1000000000 + (databaseId.hashCode() & 0x3fffffff);
+        SharedPreferences cooldownPrefs = getSharedPreferences(
+                COOLDOWN_PREFS, MODE_PRIVATE);
+        String key = PREF_SYNCED_TIMERS_PREFIX + accountHash;
+
+        try {
+            JSONArray timers = new JSONArray(cooldownPrefs.getString(key, "[]"));
+            boolean found = false;
+            for (int i = 0; i < timers.length(); i++) {
+                JSONObject item = timers.optJSONObject(i);
+                if (item != null && databaseId.equals(
+                        item.optString("databaseId", ""))) {
+                    item.put("command", command);
+                    item.put("durationMillis", duration);
+                    item.put("endTime", endTime);
+                    item.put("alarmRequestCode", alarmId);
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                JSONObject item = new JSONObject();
+                item.put("command", command);
+                item.put("databaseId", databaseId);
+                item.put("durationMillis", duration);
+                item.put("endTime", endTime);
+                item.put("alarmRequestCode", alarmId);
+                timers.put(item);
+            }
+            cooldownPrefs.edit().putString(key, timers.toString()).apply();
+
+            Intent alarm = new Intent(this, CooldownAlarmReceiver.class);
+            alarm.setAction(CooldownAlarmReceiver.ACTION_READY);
+            alarm.putExtra(CooldownAlarmReceiver.EXTRA_COMMAND, command);
+            alarm.putExtra(CooldownAlarmReceiver.EXTRA_END_TIME, endTime);
+            alarm.putExtra(CooldownAlarmReceiver.EXTRA_ALARM_ID, alarmId);
+            alarm.putExtra(CooldownAlarmReceiver.EXTRA_ACCOUNT_HASH, accountHash);
+            alarm.putExtra(CooldownAlarmReceiver.EXTRA_EVENT_ID, databaseId);
+
+            int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                flags |= PendingIntent.FLAG_IMMUTABLE;
+            }
+            PendingIntent pendingIntent = PendingIntent.getBroadcast(
+                    this, alarmId, alarm, flags);
+            AlarmManager alarms = (AlarmManager) getSystemService(ALARM_SERVICE);
+            if (alarms == null) return;
+
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+                        && alarms.canScheduleExactAlarms()) {
+                    alarms.setExactAndAllowWhileIdle(
+                            AlarmManager.RTC_WAKEUP, endTime, pendingIntent);
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    alarms.setAndAllowWhileIdle(
+                            AlarmManager.RTC_WAKEUP, endTime, pendingIntent);
+                } else {
+                    alarms.setExact(AlarmManager.RTC_WAKEUP, endTime, pendingIntent);
+                }
+            } catch (SecurityException denied) {
+                alarms.setAndAllowWhileIdle(
+                        AlarmManager.RTC_WAKEUP, endTime, pendingIntent);
+                Log.w(TAG, "Permiso de alarma exacta no disponible; se programó alarma flexible.");
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "No se pudo guardar/programar el cooldown sincronizado " + databaseId, e);
         }
     }
 
