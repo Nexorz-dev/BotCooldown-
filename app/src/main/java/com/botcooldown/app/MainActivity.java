@@ -33,6 +33,7 @@ import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -103,6 +104,7 @@ public class MainActivity extends Activity {
     private static final String PREFS_NAME = "botcooldown_preferences";
     private static final String PREF_MANUAL_TIMERS = "manual_timers";
     private static final String PREF_SYNCED_IDS = "synced_event_ids_";
+    private static final String PREF_ACCENT_COLOR = "accent_color";
 
     private static final String PREF_BACKGROUND_SETUP_CONFIRMED =
             "background_setup_confirmed";
@@ -115,11 +117,26 @@ public class MainActivity extends Activity {
     private static final int MAX_SAVED_SYNCED_IDS = 500;
 
     private static final String BG = "#04090C";
+    private static final int DEFAULT_GREEN = 0xFF39FF74;
+
     private static final int CARD = 0xFF0A1316;
-    private static final int GREEN = 0xFF39FF74;
+    private int GREEN = DEFAULT_GREEN;
+
     private static final int GOLD = 0xFFFFC230;
     private static final int MUTED = 0xFF97ABA9;
     private static final int WHITE = 0xFFEFFFF5;
+
+    private int selectedAccentColor = DEFAULT_GREEN;
+
+    private AlertDialog colorDialog;
+    private TextView colorPreview;
+    private SeekBar hueSeekBar;
+    private SeekBar saturationSeekBar;
+    private SeekBar brightnessSeekBar;
+
+    private float selectedHue = 135f;
+    private float selectedSaturation = 1f;
+    private float selectedBrightness = 1f;
 
     private static class Cooldown {
         String command;
@@ -208,6 +225,8 @@ public class MainActivity extends Activity {
         preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
         linkPreferences = getSharedPreferences(LINK_PREFS, MODE_PRIVATE);
 
+        loadAccentColor();
+
         getOrCreateInstallationCredentials();
 
         restoreSyncedIds();
@@ -234,6 +253,415 @@ public class MainActivity extends Activity {
 
         handler.post(this::showBackgroundSetupDialogIfNeeded);
     }
+
+    // =========================================================
+    // PERSONALIZACIÓN DE COLORES
+    // =========================================================
+
+    private void loadAccentColor() {
+        if (preferences == null) {
+            return;
+        }
+
+        selectedAccentColor = preferences.getInt(
+                PREF_ACCENT_COLOR, DEFAULT_GREEN);
+
+        GREEN = selectedAccentColor;
+
+        float[] hsv = new float[3];
+        Color.colorToHSV(selectedAccentColor, hsv);
+
+        selectedHue = hsv[0];
+        selectedSaturation = hsv[1];
+        selectedBrightness = hsv[2];
+    }
+
+    private void saveAccentColor(int color) {
+        selectedAccentColor = color;
+        GREEN = color;
+
+        float[] hsv = new float[3];
+        Color.colorToHSV(color, hsv);
+
+        selectedHue = hsv[0];
+        selectedSaturation = hsv[1];
+        selectedBrightness = hsv[2];
+
+        preferences.edit()
+                .putInt(PREF_ACCENT_COLOR, color)
+                .apply();
+    }
+
+    private int getAccentShade(float saturationFactor,
+                               float brightnessFactor) {
+
+        float saturation = Math.max(
+                0f, Math.min(1f, selectedSaturation * saturationFactor));
+
+        float brightness = Math.max(
+                0f, Math.min(1f, selectedBrightness * brightnessFactor));
+
+        return Color.HSVToColor(new float[]{
+                selectedHue,
+                saturation,
+                brightness
+        });
+    }
+
+    private int themedColor(int originalColor) {
+
+        if (originalColor == DEFAULT_GREEN) {
+            return GREEN;
+        }
+
+        if (originalColor == CARD) {
+            return getAccentShade(0.35f, 0.075f);
+        }
+
+        if (originalColor == 0xFF17432A) {
+            return getAccentShade(0.65f, 0.30f);
+        }
+
+        if (originalColor == 0xFF24643A) {
+            return getAccentShade(0.85f, 0.55f);
+        }
+
+        if (originalColor == 0xFF102219) {
+            return getAccentShade(0.55f, 0.18f);
+        }
+
+        if (originalColor == 0xFF28503A) {
+            return getAccentShade(0.65f, 0.36f);
+        }
+
+        if (originalColor == 0xFF205034) {
+            return getAccentShade(0.75f, 0.32f);
+        }
+
+        if (originalColor == 0xFF08130D) {
+            return getAccentShade(0.45f, 0.09f);
+        }
+
+        if (originalColor == 0xFF10291A) {
+            return getAccentShade(0.65f, 0.20f);
+        }
+
+        return originalColor;
+    }
+
+    private void showColorPalette() {
+
+        LinearLayout layout = vertical();
+        layout.setPadding(dp(20), dp(18), dp(20), dp(20));
+        layout.setBackground(shape(
+                Color.parseColor(BG), 0xFF17432A, 18));
+
+        TextView description = text(
+                "Personaliza el color principal de BotCooldown.",
+                13, MUTED, false);
+
+        layout.addView(description);
+
+        TextView previewLabel = text(
+                "VISTA PREVIA", 11, GREEN, true);
+
+        LinearLayout.LayoutParams previewLabelParams = params(-1, -2);
+        previewLabelParams.topMargin = dp(20);
+        layout.addView(previewLabel, previewLabelParams);
+
+        colorPreview = text(
+                "BotCooldown  ✦  12:45",
+                23, GREEN, true);
+
+        colorPreview.setGravity(Gravity.CENTER);
+        colorPreview.setPadding(dp(12), dp(22), dp(12), dp(22));
+        colorPreview.setBackground(shape(
+                getAccentShade(0.35f, 0.12f), GREEN, 14));
+
+        LinearLayout.LayoutParams previewParams = params(-1, -2);
+        previewParams.topMargin = dp(10);
+        layout.addView(colorPreview, previewParams);
+
+        TextView presetTitle = text(
+                "COLORES PREDEFINIDOS", 11, MUTED, true);
+
+        LinearLayout.LayoutParams presetTitleParams = params(-1, -2);
+        presetTitleParams.topMargin = dp(22);
+        layout.addView(presetTitle, presetTitleParams);
+
+        int[] presetColors = {
+                0xFF39FF74,
+                0xFF00E5FF,
+                0xFF2979FF,
+                0xFF9D4EDD,
+                0xFFE040FB,
+                0xFFFF4081,
+                0xFFFF5252,
+                0xFFFF9100,
+                0xFFFFD740,
+                0xFFFFFFFF,
+                0xFF00E676,
+                0xFF18FFFF
+        };
+
+        LinearLayout presetGrid = vertical();
+
+        for (int row = 0; row < 3; row++) {
+            LinearLayout colorRow = new LinearLayout(this);
+            colorRow.setGravity(Gravity.CENTER);
+            colorRow.setOrientation(LinearLayout.HORIZONTAL);
+
+            for (int column = 0; column < 4; column++) {
+                int index = row * 4 + column;
+                int color = presetColors[index];
+
+                View swatch = new View(this);
+                swatch.setBackground(shape(color, WHITE, 50));
+
+                LinearLayout.LayoutParams swatchParams =
+                        new LinearLayout.LayoutParams(
+                                0, dp(42), 1);
+
+                swatchParams.setMargins(
+                        dp(5), dp(7), dp(5), dp(7));
+
+                colorRow.addView(swatch, swatchParams);
+
+                swatch.setOnClickListener(v -> {
+                    updatePalettePreview(color);
+
+                    float[] hsv = new float[3];
+                    Color.colorToHSV(color, hsv);
+
+                    selectedHue = hsv[0];
+                    selectedSaturation = hsv[1];
+                    selectedBrightness = hsv[2];
+
+                    if (hueSeekBar != null) {
+                        hueSeekBar.setProgress(
+                                Math.round(selectedHue));
+                    }
+
+                    if (saturationSeekBar != null) {
+                        saturationSeekBar.setProgress(
+                                Math.round(selectedSaturation * 100));
+                    }
+
+                    if (brightnessSeekBar != null) {
+                        brightnessSeekBar.setProgress(
+                                Math.round(selectedBrightness * 100));
+                    }
+                });
+            }
+
+            presetGrid.addView(colorRow);
+        }
+
+        layout.addView(presetGrid);
+
+        TextView customTitle = text(
+                "COLOR PERSONALIZADO", 11, MUTED, true);
+
+        LinearLayout.LayoutParams customTitleParams = params(-1, -2);
+        customTitleParams.topMargin = dp(18);
+        layout.addView(customTitle, customTitleParams);
+
+        hueSeekBar = createColorSeekBar(360);
+        saturationSeekBar = createColorSeekBar(100);
+        brightnessSeekBar = createColorSeekBar(100);
+
+        addColorControl(
+                layout, "Tono", hueSeekBar,
+                Math.round(selectedHue));
+
+        addColorControl(
+                layout, "Saturación", saturationSeekBar,
+                Math.round(selectedSaturation * 100));
+
+        addColorControl(
+                layout, "Brillo", brightnessSeekBar,
+                Math.round(selectedBrightness * 100));
+
+        hueSeekBar.setOnSeekBarChangeListener(
+                new SeekBar.OnSeekBarChangeListener() {
+                    @Override
+                    public void onProgressChanged(
+                            SeekBar seekBar, int progress,
+                            boolean fromUser) {
+
+                        selectedHue = progress;
+                        updateCustomColorPreview();
+                    }
+
+                    @Override
+                    public void onStartTrackingTouch(SeekBar seekBar) {
+                    }
+
+                    @Override
+                    public void onStopTrackingTouch(SeekBar seekBar) {
+                    }
+                });
+
+        saturationSeekBar.setOnSeekBarChangeListener(
+                new SeekBar.OnSeekBarChangeListener() {
+                    @Override
+                    public void onProgressChanged(
+                            SeekBar seekBar, int progress,
+                            boolean fromUser) {
+
+                        selectedSaturation = progress / 100f;
+                        updateCustomColorPreview();
+                    }
+
+                    @Override
+                    public void onStartTrackingTouch(SeekBar seekBar) {
+                    }
+
+                    @Override
+                    public void onStopTrackingTouch(SeekBar seekBar) {
+                    }
+                });
+
+        brightnessSeekBar.setOnSeekBarChangeListener(
+                new SeekBar.OnSeekBarChangeListener() {
+                    @Override
+                    public void onProgressChanged(
+                            SeekBar seekBar, int progress,
+                            boolean fromUser) {
+
+                        selectedBrightness = progress / 100f;
+                        updateCustomColorPreview();
+                    }
+
+                    @Override
+                    public void onStartTrackingTouch(SeekBar seekBar) {
+                    }
+
+                    @Override
+                    public void onStopTrackingTouch(SeekBar seekBar) {
+                    }
+                });
+
+        ScrollView scrollView = new ScrollView(this);
+        scrollView.setFillViewport(false);
+        scrollView.addView(layout);
+
+        colorDialog = new AlertDialog.Builder(this)
+                .setTitle("✦  Personalizar colores")
+                .setView(scrollView)
+                .setNegativeButton("Cancelar", null)
+                .setPositiveButton("Aplicar color", null)
+                .create();
+
+        colorDialog.setOnShowListener(dialog -> {
+
+            int titleId = getResources().getIdentifier(
+                    "alertTitle", "id", "android");
+
+            TextView title = colorDialog.findViewById(titleId);
+
+            if (title != null) {
+                title.setTextColor(GREEN);
+            }
+
+            Button applyButton = colorDialog.getButton(
+                    AlertDialog.BUTTON_POSITIVE);
+
+            Button cancelButton = colorDialog.getButton(
+                    AlertDialog.BUTTON_NEGATIVE);
+
+            if (applyButton != null) {
+                applyButton.setTextColor(GREEN);
+
+                applyButton.setOnClickListener(v -> {
+                    int newColor = Color.HSVToColor(new float[]{
+                            selectedHue,
+                            selectedSaturation,
+                            selectedBrightness
+                    });
+
+                    saveAccentColor(newColor);
+
+                    colorDialog.dismiss();
+
+                    recreate();
+                });
+            }
+
+            if (cancelButton != null) {
+                cancelButton.setTextColor(GOLD);
+            }
+
+            if (colorDialog.getWindow() != null) {
+                colorDialog.getWindow().setBackgroundDrawable(
+                        shape(CARD, GREEN, 18));
+            }
+        });
+
+        colorDialog.show();
+    }
+
+    private SeekBar createColorSeekBar(int max) {
+        SeekBar seekBar = new SeekBar(this);
+        seekBar.setMax(max);
+        seekBar.setProgressTintList(
+                android.content.res.ColorStateList.valueOf(GREEN));
+        seekBar.setThumbTintList(
+                android.content.res.ColorStateList.valueOf(GREEN));
+        return seekBar;
+    }
+
+    private void addColorControl(
+            LinearLayout parent,
+            String label,
+            SeekBar seekBar,
+            int progress) {
+
+        TextView title = text(label, 12, WHITE, true);
+
+        LinearLayout.LayoutParams titleParams = params(-1, -2);
+        titleParams.topMargin = dp(12);
+        parent.addView(title, titleParams);
+
+        seekBar.setProgress(progress);
+
+        LinearLayout.LayoutParams seekParams = params(-1, dp(38));
+        seekParams.topMargin = dp(3);
+        parent.addView(seekBar, seekParams);
+    }
+
+    private void updatePalettePreview(int color) {
+        if (colorPreview == null) {
+            return;
+        }
+
+        colorPreview.setTextColor(color);
+        colorPreview.setBackground(shape(
+                darkenColor(color, 0.13f), color, 14));
+    }
+
+    private void updateCustomColorPreview() {
+        int color = Color.HSVToColor(new float[]{
+                selectedHue,
+                selectedSaturation,
+                selectedBrightness
+        });
+
+        updatePalettePreview(color);
+    }
+
+    private int darkenColor(int color, float factor) {
+        float[] hsv = new float[3];
+        Color.colorToHSV(color, hsv);
+
+        hsv[2] = Math.max(0f, Math.min(1f, hsv[2] * factor));
+
+        return Color.HSVToColor(hsv);
+    }
+
+    // =========================================================
+    // BARRA INFERIOR
+    // =========================================================
 
     @Override
     public boolean dispatchTouchEvent(MotionEvent event) {
@@ -375,11 +803,6 @@ public class MainActivity extends Activity {
                 .setNegativeButton("Ya lo activé", null)
                 .create();
 
-        if (dialog.getWindow() != null) {
-            dialog.getWindow().setBackgroundDrawable(
-                    shape(CARD, GREEN, 18));
-        }
-
         dialog.setCancelable(false);
 
         dialog.setOnDismissListener(d ->
@@ -447,7 +870,16 @@ public class MainActivity extends Activity {
         });
 
         dialog.show();
+
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setBackgroundDrawable(
+                    shape(CARD, GREEN, 18));
+        }
     }
+
+    // =========================================================
+    // VINCULACIÓN DISCORD
+    // =========================================================
 
     private void getOrCreateInstallationCredentials() {
         String installationId = linkPreferences.getString(
@@ -733,11 +1165,6 @@ public class MainActivity extends Activity {
                 .setNeutralButton("Copiar código", null)
                 .create();
 
-        if (dialog.getWindow() != null) {
-            dialog.getWindow().setBackgroundDrawable(
-                    shape(CARD, GREEN, 18));
-        }
-
         dialog.setOnShowListener(d -> {
             int titleId = getResources().getIdentifier(
                     "alertTitle", "id", "android");
@@ -779,6 +1206,11 @@ public class MainActivity extends Activity {
         });
 
         dialog.show();
+
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setBackgroundDrawable(
+                    shape(CARD, GREEN, 18));
+        }
     }
 
     private void showUnlinkConfirmationDialog() {
@@ -801,11 +1233,6 @@ public class MainActivity extends Activity {
                 .setPositiveButton("Desvincular",
                         (d, w) -> unlinkDiscord())
                 .create();
-
-        if (dialog.getWindow() != null) {
-            dialog.getWindow().setBackgroundDrawable(
-                    shape(CARD, GREEN, 18));
-        }
 
         dialog.setOnShowListener(d -> {
             int titleId = getResources().getIdentifier(
@@ -833,6 +1260,11 @@ public class MainActivity extends Activity {
         });
 
         dialog.show();
+
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setBackgroundDrawable(
+                    shape(CARD, GREEN, 18));
+        }
     }
 
     private void checkLinkStatus(boolean fromPolling) {
@@ -1011,6 +1443,10 @@ public class MainActivity extends Activity {
         }
     }
 
+    // =========================================================
+    // SINCRONIZACIÓN
+    // =========================================================
+
     private void restoreSyncedIds() {
         syncedAccount = tokenHash(getApiToken());
 
@@ -1182,6 +1618,10 @@ public class MainActivity extends Activity {
         }
     }
 
+    // =========================================================
+    // ALARMAS Y NOTIFICACIONES
+    // =========================================================
+
     private boolean canScheduleExactAlarms() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             return alarmManager != null
@@ -1312,6 +1752,10 @@ public class MainActivity extends Activity {
         }
     }
 
+    // =========================================================
+    // GUARDADO DE TEMPORIZADORES
+    // =========================================================
+
     private void saveManualCooldowns() {
         if (preferences == null) {
             return;
@@ -1397,6 +1841,10 @@ public class MainActivity extends Activity {
         }
     }
 
+    // =========================================================
+    // ELEMENTOS VISUALES
+    // =========================================================
+
     private int dp(float value) {
         return (int) (value
                 * getResources().getDisplayMetrics().density + 0.5f);
@@ -1404,11 +1852,12 @@ public class MainActivity extends Activity {
 
     private GradientDrawable shape(int color, int stroke, int radius) {
         GradientDrawable d = new GradientDrawable();
-        d.setColor(color);
+
+        d.setColor(themedColor(color));
         d.setCornerRadius(dp(radius));
 
         if (stroke != Color.TRANSPARENT) {
-            d.setStroke(dp(1), stroke);
+            d.setStroke(dp(1), themedColor(stroke));
         }
 
         return d;
@@ -1418,7 +1867,7 @@ public class MainActivity extends Activity {
         TextView t = new TextView(this);
         t.setText(value);
         t.setTextSize(size);
-        t.setTextColor(color);
+        t.setTextColor(themedColor(color));
 
         if (bold) {
             t.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
@@ -1436,6 +1885,10 @@ public class MainActivity extends Activity {
     private LinearLayout.LayoutParams params(int w, int h) {
         return new LinearLayout.LayoutParams(w, h);
     }
+
+    // =========================================================
+    // CONSTRUCCIÓN DE LA PANTALLA
+    // =========================================================
 
     private void buildScreen() {
         FrameLayout container = new FrameLayout(this);
@@ -1476,11 +1929,7 @@ public class MainActivity extends Activity {
         bottomBar.addView(colorsButton, colorParams);
         bottomBar.addView(backgroundsButton, backgroundParams);
 
-        colorsButton.setOnClickListener(v ->
-                Toast.makeText(
-                        MainActivity.this,
-                        "La sección Colores estará disponible próximamente.",
-                        Toast.LENGTH_SHORT).show());
+        colorsButton.setOnClickListener(v -> showColorPalette());
 
         backgroundsButton.setOnClickListener(v ->
                 Toast.makeText(
@@ -1643,6 +2092,10 @@ public class MainActivity extends Activity {
         form.addView(input, p);
     }
 
+    // =========================================================
+    // TEMPORIZADORES
+    // =========================================================
+
     private void startCooldown() {
         String command = commandInput.getText().toString().trim();
         String minText = minutesInput.getText().toString().trim();
@@ -1799,6 +2252,10 @@ public class MainActivity extends Activity {
         c.view.setText(time);
         c.view.setTextColor(GREEN);
     }
+
+    // =========================================================
+    // NOTIFICACIONES
+    // =========================================================
 
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
