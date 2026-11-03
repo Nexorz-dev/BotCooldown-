@@ -26,6 +26,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -76,6 +77,7 @@ public class MainActivity extends Activity {
 
     private TextView discordStatusView;
     private TextView exactAlarmStatusView;
+    private TextView batteryOptimizationStatusView;
     private Button linkButton;
     private Button unlinkButton;
 
@@ -1197,6 +1199,7 @@ public class MainActivity extends Activity {
         }
 
         updateExactAlarmStatus();
+        updateBatteryOptimizationStatus();
         checkLinkStatus(false);
 
         showBackgroundSetupDialogIfNeeded();
@@ -1241,7 +1244,7 @@ public class MainActivity extends Activity {
                 .setTitle("Actividad en segundo plano")
                 .setView(layout)
                 .setPositiveButton("Configurar ahora", null)
-                .setNegativeButton("Ya lo activé", null)
+                .setNegativeButton("Entendido", null)
                 .create();
 
         dialog.setCancelable(false);
@@ -1304,8 +1307,8 @@ public class MainActivity extends Activity {
 
                     Toast.makeText(
                             MainActivity.this,
-                            "Configuración confirmada",
-                            Toast.LENGTH_SHORT).show();
+                            "Recuerda mantener permitida la actividad en segundo plano.",
+                            Toast.LENGTH_LONG).show();
                 });
             }
         });
@@ -2191,9 +2194,32 @@ public class MainActivity extends Activity {
 
         boolean allowed = canScheduleExactAlarms();
         exactAlarmStatusView.setText(allowed
-                ? "✓ Alarmas exactas: permiso concedido"
-                : "! Alarmas exactas: permiso NO concedido");
+                ? "✓ Alarmas exactas: disponibles"
+                : "! Alarmas exactas: acceso pendiente");
         exactAlarmStatusView.setTextColor(allowed ? GREEN : GOLD);
+    }
+
+    private void updateBatteryOptimizationStatus() {
+        if (batteryOptimizationStatusView == null) {
+            return;
+        }
+
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            batteryOptimizationStatusView.setText(
+                    "✓ Optimización de batería: no aplica en este Android");
+            batteryOptimizationStatusView.setTextColor(GREEN);
+            return;
+        }
+
+        PowerManager powerManager =
+                (PowerManager) getSystemService(POWER_SERVICE);
+        boolean exempt = powerManager != null
+                && powerManager.isIgnoringBatteryOptimizations(getPackageName());
+
+        batteryOptimizationStatusView.setText(exempt
+                ? "✓ Exención de optimización de batería: activa"
+                : "! Exención de optimización de batería: no activa");
+        batteryOptimizationStatusView.setTextColor(exempt ? GREEN : GOLD);
     }
 
     private void openExactAlarmSettingsFromButton() {
@@ -2203,14 +2229,9 @@ public class MainActivity extends Activity {
             return;
         }
 
-        if (canScheduleExactAlarms()) {
-            updateExactAlarmStatus();
-            Toast.makeText(this,
-                    "El permiso de alarmas exactas ya está concedido.",
-                    Toast.LENGTH_LONG).show();
-            return;
-        }
-
+        // Abrimos la pantalla aunque Android permita alarmas por una
+        // exención de batería: esa capacidad no demuestra por sí sola
+        // que el acceso especial visible al usuario esté concedido.
         Uri appUri = Uri.parse("package:" + getPackageName());
         try {
             Intent requestIntent = new Intent(
@@ -2710,6 +2731,44 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams alarmStatusParams = params(-1, -2);
         alarmStatusParams.topMargin = dp(14);
         form.addView(exactAlarmStatusView, alarmStatusParams);
+
+        batteryOptimizationStatusView = text(
+                "Comprobando optimización de batería...",
+                12, MUTED, true);
+        LinearLayout.LayoutParams batteryStatusParams = params(-1, -2);
+        batteryStatusParams.topMargin = dp(10);
+        form.addView(batteryOptimizationStatusView, batteryStatusParams);
+
+        TextView backgroundHelp = text(
+                "IMPORTANTE: permite la actividad en segundo plano en los ajustes de batería de tu OPPO. "
+                        + "Android no ofrece una comprobación universal para ese ajuste del fabricante.",
+                12, MUTED, false);
+        LinearLayout.LayoutParams backgroundHelpParams = params(-1, -2);
+        backgroundHelpParams.topMargin = dp(10);
+        form.addView(backgroundHelp, backgroundHelpParams);
+
+        Button backgroundSettingsButton = new Button(this);
+        backgroundSettingsButton.setText("CONFIGURAR ACTIVIDAD EN SEGUNDO PLANO");
+        backgroundSettingsButton.setTextColor(GREEN);
+        backgroundSettingsButton.setTextSize(12);
+        backgroundSettingsButton.setAllCaps(false);
+        backgroundSettingsButton.setBackground(transparentShape(
+                0xFF102219, 0xFF24643A, 12, 215));
+        LinearLayout.LayoutParams backgroundButtonParams = params(-1, dp(44));
+        backgroundButtonParams.topMargin = dp(8);
+        form.addView(backgroundSettingsButton, backgroundButtonParams);
+        backgroundSettingsButton.setOnClickListener(v -> {
+            try {
+                Intent intent = new Intent(
+                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                intent.setData(Uri.parse("package:" + getPackageName()));
+                startActivity(intent);
+            } catch (Exception e) {
+                Toast.makeText(this,
+                        "Abre Ajustes > Aplicaciones > BotCooldown.",
+                        Toast.LENGTH_LONG).show();
+            }
+        });
 
         Button exactAlarmSettingsButton = new Button(this);
         exactAlarmSettingsButton.setText("VERIFICAR / CONFIGURAR ALARMAS");
