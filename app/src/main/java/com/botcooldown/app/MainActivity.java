@@ -31,11 +31,13 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ListView;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
@@ -389,6 +391,39 @@ public class MainActivity extends Activity {
         return originalColor;
     }
 
+    /*
+     * Crea tarjetas con transparencia sin cambiar sus colores originales.
+     * El valor alpha controla cuánto se transparenta el fondo.
+     */
+    private GradientDrawable transparentShape(
+            int color, int stroke, int radius, int alpha) {
+
+        GradientDrawable drawable = new GradientDrawable();
+
+        int backgroundColor = themedColor(color);
+        int borderColor = themedColor(stroke);
+
+        drawable.setColor(Color.argb(
+                alpha,
+                Color.red(backgroundColor),
+                Color.green(backgroundColor),
+                Color.blue(backgroundColor)));
+
+        drawable.setCornerRadius(dp(radius));
+
+        if (stroke != Color.TRANSPARENT) {
+            drawable.setStroke(
+                    dp(1),
+                    Color.argb(
+                            Math.min(230, alpha + 35),
+                            Color.red(borderColor),
+                            Color.green(borderColor),
+                            Color.blue(borderColor)));
+        }
+
+        return drawable;
+    }
+
     private void showColorPalette() {
 
         LinearLayout layout = vertical();
@@ -702,24 +737,56 @@ public class MainActivity extends Activity {
     // =========================================================
 
     private void showBackgroundOptions() {
-        String[] options = {
+
+        LinearLayout layout = vertical();
+        layout.setPadding(dp(20), dp(12), dp(20), dp(12));
+
+        layout.setBackgroundColor(Color.TRANSPARENT);
+
+        TextView chooseImage = text(
                 "Elegir imagen de la galería",
-                "Quitar imagen y restaurar fondo original"
-        };
+                17, WHITE, true);
+
+        chooseImage.setGravity(Gravity.CENTER_VERTICAL);
+        chooseImage.setPadding(dp(12), dp(17), dp(12), dp(17));
+        chooseImage.setBackground(transparentShape(
+                0xFF102219, 0xFF24643A, 12, 210));
+
+        TextView restoreBackground = text(
+                "Quitar imagen y restaurar fondo original",
+                17, WHITE, true);
+
+        restoreBackground.setGravity(Gravity.CENTER_VERTICAL);
+        restoreBackground.setPadding(
+                dp(12), dp(17), dp(12), dp(17));
+
+        restoreBackground.setBackground(transparentShape(
+                0xFF102219, 0xFF24643A, 12, 210));
+
+        LinearLayout.LayoutParams chooseParams = params(-1, -2);
+        chooseParams.bottomMargin = dp(12);
+
+        layout.addView(chooseImage, chooseParams);
+        layout.addView(restoreBackground, params(-1, -2));
 
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("▧  Fondos personalizados")
-                .setItems(options, (d, which) -> {
-                    if (which == 0) {
-                        openBackgroundPicker();
-                    } else {
-                        removeBackgroundImage();
-                    }
-                })
+                .setView(layout)
                 .setNegativeButton("Cerrar", null)
                 .create();
 
+        chooseImage.setOnClickListener(v -> {
+            dialog.dismiss();
+            openBackgroundPicker();
+        });
+
+        restoreBackground.setOnClickListener(v -> {
+            dialog.dismiss();
+            removeBackgroundImage();
+        });
+
         dialog.setOnShowListener(d -> {
+
             int titleId = getResources().getIdentifier(
                     "alertTitle", "id", "android");
 
@@ -727,6 +794,7 @@ public class MainActivity extends Activity {
 
             if (title != null) {
                 title.setTextColor(GREEN);
+                title.setTextSize(19);
             }
 
             Button close = dialog.getButton(
@@ -734,6 +802,7 @@ public class MainActivity extends Activity {
 
             if (close != null) {
                 close.setTextColor(GOLD);
+                close.setTextSize(15);
             }
 
             if (dialog.getWindow() != null) {
@@ -743,6 +812,11 @@ public class MainActivity extends Activity {
         });
 
         dialog.show();
+
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setBackgroundDrawable(
+                    shape(CARD, GREEN, 18));
+        }
     }
 
     private void openBackgroundPicker() {
@@ -1099,7 +1173,8 @@ public class MainActivity extends Activity {
         button.setTextSize(13);
         button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         button.setAllCaps(false);
-        button.setBackground(shape(0xFF102219, 0xFF24643A, 12));
+        button.setBackground(transparentShape(
+                0xFF102219, 0xFF24643A, 12, 215));
         button.setPadding(dp(12), 0, dp(12), 0);
         return button;
     }
@@ -2431,7 +2506,6 @@ public class MainActivity extends Activity {
         FrameLayout container = new FrameLayout(this);
         container.setBackgroundColor(Color.parseColor(BG));
 
-        // Imagen de fondo: se coloca detrás de todos los elementos.
         backgroundImageView = new ImageView(this);
         backgroundImageView.setScaleType(ImageView.ScaleType.CENTER_CROP);
         backgroundImageView.setVisibility(View.GONE);
@@ -2441,7 +2515,6 @@ public class MainActivity extends Activity {
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT));
 
-        // Capa oscura para conservar la legibilidad.
         backgroundDimView = new View(this);
         backgroundDimView.setBackgroundColor(0x9904090C);
         backgroundDimView.setVisibility(View.GONE);
@@ -2469,7 +2542,8 @@ public class MainActivity extends Activity {
         bottomBar.setOrientation(LinearLayout.HORIZONTAL);
         bottomBar.setGravity(Gravity.CENTER);
         bottomBar.setPadding(dp(10), dp(8), dp(10), dp(8));
-        bottomBar.setBackground(shape(0xFF08130D, 0xFF24643A, 18));
+        bottomBar.setBackground(transparentShape(
+                0xFF08130D, 0xFF24643A, 18, 215));
         bottomBar.setElevation(dp(12));
         bottomBar.setAlpha(0f);
         bottomBar.setVisibility(View.GONE);
@@ -2507,8 +2581,6 @@ public class MainActivity extends Activity {
 
         setContentView(container);
 
-        // Recupera el fondo guardado sin reconstruir ni modificar
-        // los temporizadores que ya están en pantalla.
         applySavedBackground();
 
         LinearLayout header = new LinearLayout(this);
@@ -2539,7 +2611,8 @@ public class MainActivity extends Activity {
 
         LinearLayout discordCard = vertical();
         discordCard.setPadding(dp(16), dp(16), dp(16), dp(16));
-        discordCard.setBackground(shape(CARD, 0xFF17432A, 18));
+        discordCard.setBackground(transparentShape(
+                CARD, 0xFF17432A, 18, 190));
 
         root.addView(discordCard, params(-1, -2));
 
@@ -2586,7 +2659,8 @@ public class MainActivity extends Activity {
 
         LinearLayout form = vertical();
         form.setPadding(dp(16), dp(16), dp(16), dp(18));
-        form.setBackground(shape(CARD, 0xFF17432A, 18));
+        form.setBackground(transparentShape(
+                CARD, 0xFF17432A, 18, 190));
 
         LinearLayout.LayoutParams formParams = params(-1, -2);
         formParams.topMargin = dp(22);
@@ -2642,7 +2716,8 @@ public class MainActivity extends Activity {
         e.setHint(hint);
         e.setInputType(numeric ? 2 : 1);
         e.setPadding(dp(13), dp(10), dp(13), dp(10));
-        e.setBackground(shape(Color.parseColor(BG), 0xFF28503A, 12));
+        e.setBackground(transparentShape(
+                Color.parseColor(BG), 0xFF28503A, 12, 195));
         return e;
     }
 
@@ -2705,7 +2780,8 @@ public class MainActivity extends Activity {
     private void createCooldownCard(Cooldown c) {
         LinearLayout card = vertical();
         card.setPadding(dp(16), dp(15), dp(16), dp(14));
-        card.setBackground(shape(CARD, 0xFF205034, 16));
+        card.setBackground(transparentShape(
+                CARD, 0xFF205034, 16, 185));
 
         LinearLayout.LayoutParams cp = params(-1, -2);
         cp.bottomMargin = dp(12);
@@ -2735,7 +2811,8 @@ public class MainActivity extends Activity {
         reset.setAllCaps(false);
         reset.setTextColor(GREEN);
         reset.setTextSize(12);
-        reset.setBackground(shape(0xFF10291A, 0xFF24643A, 12));
+        reset.setBackground(transparentShape(
+                0xFF10291A, 0xFF24643A, 12, 205));
         actions.addView(reset, new LinearLayout.LayoutParams(
                 0, dp(44), 1));
 
@@ -2744,7 +2821,8 @@ public class MainActivity extends Activity {
         delete.setAllCaps(false);
         delete.setTextColor(0xFFFF8585);
         delete.setTextSize(12);
-        delete.setBackground(shape(0xFF291416, 0xFF71343A, 12));
+        delete.setBackground(transparentShape(
+                0xFF291416, 0xFF71343A, 12, 205));
 
         LinearLayout.LayoutParams dp2 = new LinearLayout.LayoutParams(
                 0, dp(44), 1);
