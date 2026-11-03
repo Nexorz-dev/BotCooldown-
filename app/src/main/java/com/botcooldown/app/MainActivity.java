@@ -1,4 +1,3 @@
-
 package com.botcooldown.app;
 
 import android.Manifest;
@@ -16,6 +15,9 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.content.res.ColorStateList;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -32,6 +34,7 @@ import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
@@ -42,6 +45,8 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -75,6 +80,19 @@ public class MainActivity extends Activity {
     private float touchStartY;
     private float touchStartX;
     private boolean bottomBarVisible = false;
+
+    private ImageView backgroundImageView;
+    private View backgroundDimView;
+
+    private static final int REQUEST_PICK_BACKGROUND = 2001;
+    private static final String PREF_BACKGROUND_IMAGE_PATH =
+            "background_image_path";
+
+    private static final String BACKGROUND_FILE_NAME =
+            "botcooldown_background_image";
+
+    private static final String BACKGROUND_TEMP_FILE_NAME =
+            "botcooldown_background_image.tmp";
 
     private NotificationManager notificationManager;
     private AlarmManager alarmManager;
@@ -625,9 +643,9 @@ public class MainActivity extends Activity {
         SeekBar seekBar = new SeekBar(this);
         seekBar.setMax(max);
         seekBar.setProgressTintList(
-                android.content.res.ColorStateList.valueOf(GREEN));
+                ColorStateList.valueOf(GREEN));
         seekBar.setThumbTintList(
-                android.content.res.ColorStateList.valueOf(GREEN));
+                ColorStateList.valueOf(GREEN));
         return seekBar;
     }
 
@@ -677,6 +695,331 @@ public class MainActivity extends Activity {
         hsv[2] = Math.max(0f, Math.min(1f, hsv[2] * factor));
 
         return Color.HSVToColor(hsv);
+    }
+
+    // =========================================================
+    // FONDOS PERSONALIZADOS
+    // =========================================================
+
+    private void showBackgroundOptions() {
+        String[] options = {
+                "Elegir imagen de la galería",
+                "Quitar imagen y restaurar fondo original"
+        };
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("▧  Fondos personalizados")
+                .setItems(options, (d, which) -> {
+                    if (which == 0) {
+                        openBackgroundPicker();
+                    } else {
+                        removeBackgroundImage();
+                    }
+                })
+                .setNegativeButton("Cerrar", null)
+                .create();
+
+        dialog.setOnShowListener(d -> {
+            int titleId = getResources().getIdentifier(
+                    "alertTitle", "id", "android");
+
+            TextView title = dialog.findViewById(titleId);
+
+            if (title != null) {
+                title.setTextColor(GREEN);
+            }
+
+            Button close = dialog.getButton(
+                    AlertDialog.BUTTON_NEGATIVE);
+
+            if (close != null) {
+                close.setTextColor(GOLD);
+            }
+
+            if (dialog.getWindow() != null) {
+                dialog.getWindow().setBackgroundDrawable(
+                        shape(CARD, GREEN, 18));
+            }
+        });
+
+        dialog.show();
+    }
+
+    private void openBackgroundPicker() {
+        try {
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("image/*");
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+            startActivityForResult(
+                    intent, REQUEST_PICK_BACKGROUND);
+
+        } catch (Exception e) {
+            Toast.makeText(
+                    this,
+                    "No se pudo abrir la galería",
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    @Override
+    protected void onActivityResult(
+            int requestCode, int resultCode, Intent data) {
+
+        super.onActivityResult(requestCode, resultCode, data);
+
+        if (requestCode == REQUEST_PICK_BACKGROUND
+                && resultCode == RESULT_OK
+                && data != null
+                && data.getData() != null) {
+
+            saveBackgroundImage(data.getData());
+        }
+    }
+
+    private void saveBackgroundImage(Uri imageUri) {
+        File temporaryFile = new File(
+                getFilesDir(), BACKGROUND_TEMP_FILE_NAME);
+
+        File destinationFile = new File(
+                getFilesDir(), BACKGROUND_FILE_NAME);
+
+        try {
+            if (temporaryFile.exists()) {
+                temporaryFile.delete();
+            }
+
+            try (InputStream input =
+                         getContentResolver().openInputStream(imageUri);
+                 FileOutputStream output =
+                         new FileOutputStream(temporaryFile)) {
+
+                if (input == null) {
+                    throw new Exception("No se pudo leer la imagen");
+                }
+
+                byte[] buffer = new byte[8192];
+                int bytesRead;
+
+                while ((bytesRead = input.read(buffer)) != -1) {
+                    output.write(buffer, 0, bytesRead);
+                }
+
+                output.flush();
+                output.getFD().sync();
+            }
+
+            BitmapFactory.Options checkOptions =
+                    new BitmapFactory.Options();
+
+            checkOptions.inJustDecodeBounds = true;
+
+            BitmapFactory.decodeFile(
+                    temporaryFile.getAbsolutePath(), checkOptions);
+
+            if (checkOptions.outWidth <= 0
+                    || checkOptions.outHeight <= 0) {
+                throw new Exception("El archivo no es una imagen válida");
+            }
+
+            File replacementFile = new File(
+                    getFilesDir(), BACKGROUND_FILE_NAME + ".new");
+
+            if (replacementFile.exists()) {
+                replacementFile.delete();
+            }
+
+            if (!temporaryFile.renameTo(replacementFile)) {
+                throw new Exception("No se pudo preparar la imagen");
+            }
+
+            if (destinationFile.exists()
+                    && !destinationFile.delete()) {
+                replacementFile.delete();
+                throw new Exception("No se pudo reemplazar el fondo anterior");
+            }
+
+            if (!replacementFile.renameTo(destinationFile)) {
+                replacementFile.delete();
+                throw new Exception("No se pudo guardar el nuevo fondo");
+            }
+
+            preferences.edit()
+                    .putString(
+                            PREF_BACKGROUND_IMAGE_PATH,
+                            destinationFile.getAbsolutePath())
+                    .apply();
+
+            applySavedBackground();
+
+            Toast.makeText(
+                    this,
+                    "Fondo personalizado aplicado",
+                    Toast.LENGTH_SHORT).show();
+
+        } catch (Exception e) {
+            temporaryFile.delete();
+
+            android.util.Log.e(
+                    "BotCooldown",
+                    "Error al guardar el fondo personalizado",
+                    e);
+
+            Toast.makeText(
+                    this,
+                    "No se pudo guardar la imagen",
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void applySavedBackground() {
+        if (backgroundImageView == null || preferences == null) {
+            return;
+        }
+
+        String path = preferences.getString(
+                PREF_BACKGROUND_IMAGE_PATH, "");
+
+        if (path == null || path.trim().isEmpty()) {
+            backgroundImageView.setImageDrawable(null);
+            backgroundImageView.setVisibility(View.GONE);
+
+            if (backgroundDimView != null) {
+                backgroundDimView.setVisibility(View.GONE);
+            }
+
+            return;
+        }
+
+        File imageFile = new File(path);
+
+        if (!imageFile.exists() || !imageFile.isFile()) {
+            backgroundImageView.setImageDrawable(null);
+            backgroundImageView.setVisibility(View.GONE);
+
+            if (backgroundDimView != null) {
+                backgroundDimView.setVisibility(View.GONE);
+            }
+
+            return;
+        }
+
+        try {
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inJustDecodeBounds = true;
+
+            BitmapFactory.decodeFile(path, options);
+
+            if (options.outWidth <= 0 || options.outHeight <= 0) {
+                throw new Exception("Imagen no válida");
+            }
+
+            int targetWidth = getResources()
+                    .getDisplayMetrics().widthPixels;
+
+            int targetHeight = getResources()
+                    .getDisplayMetrics().heightPixels;
+
+            options.inSampleSize = calculateInSampleSize(
+                    options,
+                    targetWidth,
+                    targetHeight);
+
+            options.inJustDecodeBounds = false;
+            options.inPreferredConfig = Bitmap.Config.RGB_565;
+
+            Bitmap bitmap = BitmapFactory.decodeFile(path, options);
+
+            if (bitmap == null) {
+                throw new Exception("No se pudo cargar la imagen");
+            }
+
+            backgroundImageView.setImageBitmap(bitmap);
+            backgroundImageView.setVisibility(View.VISIBLE);
+
+            if (backgroundDimView != null) {
+                backgroundDimView.setVisibility(View.VISIBLE);
+            }
+
+        } catch (OutOfMemoryError | Exception e) {
+            android.util.Log.e(
+                    "BotCooldown",
+                    "No se pudo aplicar el fondo personalizado",
+                    e);
+
+            backgroundImageView.setImageDrawable(null);
+            backgroundImageView.setVisibility(View.GONE);
+
+            if (backgroundDimView != null) {
+                backgroundDimView.setVisibility(View.GONE);
+            }
+        }
+    }
+
+    private int calculateInSampleSize(
+            BitmapFactory.Options options,
+            int requestedWidth,
+            int requestedHeight) {
+
+        int height = options.outHeight;
+        int width = options.outWidth;
+
+        int sampleSize = 1;
+
+        if (height > requestedHeight || width > requestedWidth) {
+            int halfHeight = height / 2;
+            int halfWidth = width / 2;
+
+            while ((halfHeight / sampleSize) >= requestedHeight
+                    && (halfWidth / sampleSize) >= requestedWidth) {
+                sampleSize *= 2;
+            }
+        }
+
+        return Math.max(1, sampleSize);
+    }
+
+    private void removeBackgroundImage() {
+        if (preferences == null) {
+            return;
+        }
+
+        String path = preferences.getString(
+                PREF_BACKGROUND_IMAGE_PATH, "");
+
+        if (path != null && !path.trim().isEmpty()) {
+            File imageFile = new File(path);
+
+            if (imageFile.exists()) {
+                imageFile.delete();
+            }
+        }
+
+        File temporaryFile = new File(
+                getFilesDir(), BACKGROUND_TEMP_FILE_NAME);
+
+        if (temporaryFile.exists()) {
+            temporaryFile.delete();
+        }
+
+        preferences.edit()
+                .remove(PREF_BACKGROUND_IMAGE_PATH)
+                .apply();
+
+        if (backgroundImageView != null) {
+            backgroundImageView.setImageDrawable(null);
+            backgroundImageView.setVisibility(View.GONE);
+        }
+
+        if (backgroundDimView != null) {
+            backgroundDimView.setVisibility(View.GONE);
+        }
+
+        Toast.makeText(
+                this,
+                "Se restauró el fondo original",
+                Toast.LENGTH_SHORT).show();
     }
 
     // =========================================================
@@ -970,7 +1313,6 @@ public class MainActivity extends Activity {
         String account = tokenHash(getApiToken());
 
         if (!account.equals(syncedAccount)) {
-            // Retira de la pantalla los temporizadores de la cuenta anterior.
             ArrayList<Cooldown> previousSynced = new ArrayList<>();
 
             for (Cooldown c : cooldowns) {
@@ -987,7 +1329,6 @@ public class MainActivity extends Activity {
                 }
             }
 
-            // No se eliminan las preferencias de la cuenta anterior.
             syncedAccount = account;
             restoreSyncedIds();
 
@@ -1678,7 +2019,6 @@ public class MainActivity extends Activity {
 
         for (Cooldown existing : cooldowns) {
             if (eventId.equals(existing.eventId)) {
-                // El evento ya existe. Actualiza su tiempo si cambió.
                 existing.endTime = endTime;
                 existing.durationMillis = duration;
                 existing.notified = false;
@@ -2091,12 +2431,34 @@ public class MainActivity extends Activity {
         FrameLayout container = new FrameLayout(this);
         container.setBackgroundColor(Color.parseColor(BG));
 
+        // Imagen de fondo: se coloca detrás de todos los elementos.
+        backgroundImageView = new ImageView(this);
+        backgroundImageView.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        backgroundImageView.setVisibility(View.GONE);
+
+        container.addView(backgroundImageView,
+                new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT));
+
+        // Capa oscura para conservar la legibilidad.
+        backgroundDimView = new View(this);
+        backgroundDimView.setBackgroundColor(0x9904090C);
+        backgroundDimView.setVisibility(View.GONE);
+
+        container.addView(backgroundDimView,
+                new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT));
+
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
-        scroll.setBackgroundColor(Color.parseColor(BG));
+        scroll.setBackgroundColor(Color.TRANSPARENT);
 
         LinearLayout root = vertical();
         root.setPadding(dp(22), dp(24), dp(22), dp(110));
+        root.setBackgroundColor(Color.TRANSPARENT);
+
         scroll.addView(root);
 
         container.addView(scroll, new FrameLayout.LayoutParams(
@@ -2129,10 +2491,7 @@ public class MainActivity extends Activity {
         colorsButton.setOnClickListener(v -> showColorPalette());
 
         backgroundsButton.setOnClickListener(v ->
-                Toast.makeText(
-                        MainActivity.this,
-                        "La sección Fondos estará disponible próximamente.",
-                        Toast.LENGTH_SHORT).show());
+                showBackgroundOptions());
 
         FrameLayout.LayoutParams barParams =
                 new FrameLayout.LayoutParams(
@@ -2147,6 +2506,10 @@ public class MainActivity extends Activity {
         container.addView(bottomBar, barParams);
 
         setContentView(container);
+
+        // Recupera el fondo guardado sin reconstruir ni modificar
+        // los temporizadores que ya están en pantalla.
+        applySavedBackground();
 
         LinearLayout header = new LinearLayout(this);
         header.setGravity(Gravity.CENTER_VERTICAL);
