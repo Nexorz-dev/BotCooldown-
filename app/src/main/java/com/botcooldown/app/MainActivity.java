@@ -292,6 +292,35 @@ public class MainActivity extends Activity {
                 .apply();
     }
 
+    /*
+     * Reconstruye la interfaz sin reiniciar MainActivity.
+     * Los objetos Cooldown permanecen en memoria, por lo que
+     * conservan sus tiempos, identificadores y estados.
+     */
+    private void refreshScreenWithNewAccent() {
+        // La barra inferior vuelve a su estado inicial.
+        bottomBarVisible = false;
+
+        // Reconstruye la pantalla con el nuevo color.
+        buildScreen();
+
+        // Vuelve a dibujar todos los temporizadores existentes.
+        for (Cooldown c : cooldowns) {
+            createCooldownCard(c);
+
+            if (c.notified || c.endTime <= System.currentTimeMillis()) {
+                c.notified = true;
+                c.view.setText("✓  DISPONIBLE");
+                c.view.setTextColor(GREEN);
+            } else {
+                updateCooldown(c);
+            }
+        }
+
+        // Mantiene actualizado el estado de Discord.
+        updateDiscordStatus(!getApiToken().isEmpty());
+    }
+
     private int getAccentShade(float saturationFactor,
                                float brightnessFactor) {
 
@@ -584,7 +613,8 @@ public class MainActivity extends Activity {
 
                     colorDialog.dismiss();
 
-                    recreate();
+                    // Actualiza la interfaz sin reiniciar la actividad.
+                    refreshScreenWithNewAccent();
                 });
             }
 
