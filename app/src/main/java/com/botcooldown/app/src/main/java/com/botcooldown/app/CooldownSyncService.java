@@ -132,6 +132,7 @@ public class CooldownSyncService extends Service {
 
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
+
             byte[] bytes = digest.digest(
                     token.getBytes(StandardCharsets.UTF_8));
 
@@ -162,6 +163,7 @@ public class CooldownSyncService extends Service {
 
             if (!accountHash.equals(activeAccount)) {
                 activeAccount = accountHash;
+
                 seenEvents.clear();
                 scheduledEvents.clear();
 
@@ -177,8 +179,10 @@ public class CooldownSyncService extends Service {
             connection.setRequestMethod("GET");
             connection.setConnectTimeout(10000);
             connection.setReadTimeout(10000);
+
             connection.setRequestProperty(
                     "Accept", "application/json");
+
             connection.setRequestProperty(
                     "Authorization", "Bearer " + token);
 
@@ -211,22 +215,28 @@ public class CooldownSyncService extends Service {
             String currentToken =
                     linkPrefs.getString(PREF_API_TOKEN, "");
 
-            if (!token.equals(currentToken)) {
+            if (!token.equals(currentToken)
+                    || !accountHash.equals(activeAccount)) {
                 return;
             }
 
             JSONArray events = new JSONArray(response.toString());
 
             for (int i = 0; i < events.length(); i++) {
+
                 JSONObject event = events.getJSONObject(i);
 
                 String command = event.optString("command", "");
                 String databaseId = event.optString("id", "");
-                long durationSeconds = event.optLong("duration", 0L);
-                long startedAt = event.optLong("startedAt", 0L);
+
+                long durationSeconds =
+                        event.optLong("duration", 0L);
+
+                long startedAt =
+                        event.optLong("startedAt", 0L);
 
                 if (command.trim().isEmpty()
-                        || databaseId.isEmpty()
+                        || databaseId.trim().isEmpty()
                         || durationSeconds <= 0
                         || startedAt <= 0
                         || durationSeconds > Long.MAX_VALUE / 1000L) {
@@ -240,25 +250,36 @@ public class CooldownSyncService extends Service {
                 }
 
                 long endTime = startedAt + durationMillis;
+
                 long remainingMillis =
                         endTime - System.currentTimeMillis();
 
                 String eventId = accountHash + ":" + databaseId;
 
+                // Guardar el evento como visto únicamente una vez.
                 if (seenEvents.add(eventId)) {
                     saveSeenEvents();
+                }
+
+                /*
+                 * Enviar el evento en cada comprobación.
+                 *
+                 * MainActivity debe encargarse de evitar duplicados
+                 * y de ignorar los temporizadores que ya terminaron.
+                 */
+                if (remainingMillis > 0) {
 
                     Intent synced = new Intent(ACTION_COOLDOWN_SYNCED);
+
                     synced.setPackage(getPackageName());
+
                     synced.putExtra(EXTRA_COMMAND, command);
                     synced.putExtra(EXTRA_END_TIME, endTime);
                     synced.putExtra(EXTRA_DURATION, durationMillis);
                     synced.putExtra(EXTRA_EVENT_ID, databaseId);
 
                     sendBroadcast(synced);
-                }
 
-                if (remainingMillis > 0) {
                     scheduleReadyNotification(
                             eventId,
                             command,
@@ -292,6 +313,7 @@ public class CooldownSyncService extends Service {
         }
 
         executor.schedule(() -> {
+
             try {
                 String currentToken =
                         linkPrefs.getString(PREF_API_TOKEN, "");
@@ -337,6 +359,7 @@ public class CooldownSyncService extends Service {
                 Notification notification;
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+
                     notification =
                             new Notification.Builder(this, READY_CHANNEL)
                                     .setSmallIcon(
@@ -347,7 +370,9 @@ public class CooldownSyncService extends Service {
                                     .setContentIntent(contentIntent)
                                     .setAutoCancel(true)
                                     .build();
+
                 } else {
+
                     notification =
                             new Notification.Builder(this)
                                     .setSmallIcon(
@@ -381,6 +406,7 @@ public class CooldownSyncService extends Service {
 
     private void createChannels() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+
             NotificationChannel serviceChannel =
                     new NotificationChannel(
                             SERVICE_CHANNEL,
