@@ -75,6 +75,7 @@ public class MainActivity extends Activity {
     private EditText secondsInput;
 
     private TextView discordStatusView;
+    private TextView exactAlarmStatusView;
     private Button linkButton;
     private Button unlinkButton;
 
@@ -1195,6 +1196,7 @@ public class MainActivity extends Activity {
             }
         }
 
+        updateExactAlarmStatus();
         checkLinkStatus(false);
 
         showBackgroundSetupDialogIfNeeded();
@@ -2176,6 +2178,65 @@ public class MainActivity extends Activity {
     // ALARMAS Y NOTIFICACIONES
     // =========================================================
 
+    private void updateExactAlarmStatus() {
+        if (exactAlarmStatusView == null) {
+            return;
+        }
+
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            exactAlarmStatusView.setText("✓ Alarmas exactas: disponibles en este Android");
+            exactAlarmStatusView.setTextColor(GREEN);
+            return;
+        }
+
+        boolean allowed = canScheduleExactAlarms();
+        exactAlarmStatusView.setText(allowed
+                ? "✓ Alarmas exactas: permiso concedido"
+                : "! Alarmas exactas: permiso NO concedido");
+        exactAlarmStatusView.setTextColor(allowed ? GREEN : GOLD);
+    }
+
+    private void openExactAlarmSettingsFromButton() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            Toast.makeText(this, "Este Android no requiere ese permiso especial.",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        if (canScheduleExactAlarms()) {
+            updateExactAlarmStatus();
+            Toast.makeText(this,
+                    "El permiso de alarmas exactas ya está concedido.",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        Uri appUri = Uri.parse("package:" + getPackageName());
+        try {
+            Intent requestIntent = new Intent(
+                    Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM);
+            requestIntent.setData(appUri);
+            startActivity(requestIntent);
+        } catch (Exception exactAlarmError) {
+            android.util.Log.w("BotCooldown",
+                    "No se pudo abrir el permiso de alarmas exactas",
+                    exactAlarmError);
+            try {
+                Intent appSettingsIntent = new Intent(
+                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                appSettingsIntent.setData(appUri);
+                startActivity(appSettingsIntent);
+            } catch (Exception appSettingsError) {
+                android.util.Log.e("BotCooldown",
+                        "No se pudieron abrir los ajustes de la aplicación",
+                        appSettingsError);
+                Toast.makeText(this,
+                        "No se pudieron abrir los ajustes. Busca BotCooldown en Ajustes > Aplicaciones.",
+                        Toast.LENGTH_LONG).show();
+            }
+        }
+    }
+
     private boolean canScheduleExactAlarms() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             return alarmManager != null
@@ -2643,6 +2704,25 @@ public class MainActivity extends Activity {
 
         secondsInput = makeInput("Segundos (0 a 59)", true);
         addInput(form, secondsInput);
+
+        exactAlarmStatusView = text("Comprobando permiso de alarmas exactas...",
+                12, MUTED, true);
+        LinearLayout.LayoutParams alarmStatusParams = params(-1, -2);
+        alarmStatusParams.topMargin = dp(14);
+        form.addView(exactAlarmStatusView, alarmStatusParams);
+
+        Button exactAlarmSettingsButton = new Button(this);
+        exactAlarmSettingsButton.setText("VERIFICAR / CONFIGURAR ALARMAS");
+        exactAlarmSettingsButton.setTextColor(GREEN);
+        exactAlarmSettingsButton.setTextSize(12);
+        exactAlarmSettingsButton.setAllCaps(false);
+        exactAlarmSettingsButton.setBackground(transparentShape(
+                0xFF102219, 0xFF24643A, 12, 215));
+        LinearLayout.LayoutParams exactAlarmButtonParams = params(-1, dp(44));
+        exactAlarmButtonParams.topMargin = dp(8);
+        form.addView(exactAlarmSettingsButton, exactAlarmButtonParams);
+        exactAlarmSettingsButton.setOnClickListener(v ->
+                openExactAlarmSettingsFromButton());
 
         Button start = new Button(this);
         start.setText("＋   INICIAR COOLDOWN");
