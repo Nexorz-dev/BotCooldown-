@@ -1185,7 +1185,7 @@ public class MainActivity extends Activity {
 
         reloadSyncedIdsForCurrentAccount();
 
-        if (alarmManager != null && canScheduleExactAlarms()) {
+        if (alarmManager != null) {
             requestingExactAlarmPermission = false;
 
             for (Cooldown c : cooldowns) {
