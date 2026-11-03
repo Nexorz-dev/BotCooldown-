@@ -25,9 +25,12 @@ import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
 import android.view.Gravity;
+import android.view.MotionEvent;
+import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -65,6 +68,11 @@ public class MainActivity extends Activity {
     private TextView discordStatusView;
     private Button linkButton;
     private Button unlinkButton;
+
+    private LinearLayout bottomBar;
+    private float touchStartY;
+    private float touchStartX;
+    private boolean bottomBarVisible = false;
 
     private NotificationManager notificationManager;
     private AlarmManager alarmManager;
@@ -228,6 +236,84 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    public boolean dispatchTouchEvent(MotionEvent event) {
+        if (event.getAction() == MotionEvent.ACTION_DOWN) {
+            touchStartY = event.getY();
+            touchStartX = event.getX();
+
+        } else if (event.getAction() == MotionEvent.ACTION_UP) {
+            float deltaY = event.getY() - touchStartY;
+            float deltaX = event.getX() - touchStartX;
+
+            int threshold = dp(65);
+
+            if (Math.abs(deltaY) > threshold
+                    && Math.abs(deltaY) > Math.abs(deltaX) * 1.3f) {
+
+                if (deltaY > 0) {
+                    showBottomBar();
+                } else {
+                    hideBottomBar();
+                }
+            }
+        }
+
+        return super.dispatchTouchEvent(event);
+    }
+
+    private void showBottomBar() {
+        if (bottomBar == null || bottomBarVisible) {
+            return;
+        }
+
+        bottomBarVisible = true;
+
+        bottomBar.animate().cancel();
+        bottomBar.setVisibility(View.VISIBLE);
+        bottomBar.setAlpha(0f);
+        bottomBar.setTranslationY(dp(55));
+
+        bottomBar.animate()
+                .translationY(0)
+                .alpha(1f)
+                .setDuration(220)
+                .start();
+    }
+
+    private void hideBottomBar() {
+        if (bottomBar == null || !bottomBarVisible) {
+            return;
+        }
+
+        bottomBarVisible = false;
+
+        bottomBar.animate().cancel();
+
+        bottomBar.animate()
+                .translationY(dp(55))
+                .alpha(0f)
+                .setDuration(180)
+                .withEndAction(() -> {
+                    if (!bottomBarVisible && bottomBar != null) {
+                        bottomBar.setVisibility(View.GONE);
+                    }
+                })
+                .start();
+    }
+
+    private Button createBottomBarButton(String label) {
+        Button button = new Button(this);
+        button.setText(label);
+        button.setTextColor(GREEN);
+        button.setTextSize(13);
+        button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        button.setAllCaps(false);
+        button.setBackground(shape(0xFF102219, 0xFF24643A, 12));
+        button.setPadding(dp(12), 0, dp(12), 0);
+        return button;
+    }
+
+    @Override
     protected void onResume() {
         super.onResume();
 
@@ -289,7 +375,6 @@ public class MainActivity extends Activity {
                 .setNegativeButton("Ya lo activé", null)
                 .create();
 
-        // Configurar el fondo antes de mostrar el diálogo.
         if (dialog.getWindow() != null) {
             dialog.getWindow().setBackgroundDrawable(
                     shape(CARD, GREEN, 18));
@@ -617,7 +702,6 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    // DIÁLOGO DE VINCULACIÓN CON FONDO OSCURO Y BORDES VERDES
     private void showLinkCodeDialog(String code) {
         LinearLayout layout = vertical();
         layout.setPadding(dp(22), dp(18), dp(22), dp(18));
@@ -697,7 +781,6 @@ public class MainActivity extends Activity {
         dialog.show();
     }
 
-    // DIÁLOGO DE CONFIRMACIÓN PARA DESVINCULAR DISCORD
     private void showUnlinkConfirmationDialog() {
         LinearLayout layout = vertical();
         layout.setPadding(dp(22), dp(18), dp(22), dp(18));
@@ -910,7 +993,7 @@ public class MainActivity extends Activity {
             }
 
             if (unlinkButton != null) {
-                unlinkButton.setVisibility(android.view.View.VISIBLE);
+                unlinkButton.setVisibility(View.VISIBLE);
             }
 
         } else {
@@ -923,7 +1006,7 @@ public class MainActivity extends Activity {
             }
 
             if (unlinkButton != null) {
-                unlinkButton.setVisibility(android.view.View.GONE);
+                unlinkButton.setVisibility(View.GONE);
             }
         }
     }
@@ -1355,14 +1438,69 @@ public class MainActivity extends Activity {
     }
 
     private void buildScreen() {
+        FrameLayout container = new FrameLayout(this);
+        container.setBackgroundColor(Color.parseColor(BG));
+
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         scroll.setBackgroundColor(Color.parseColor(BG));
 
         LinearLayout root = vertical();
-        root.setPadding(dp(22), dp(24), dp(22), dp(28));
+        root.setPadding(dp(22), dp(24), dp(22), dp(110));
         scroll.addView(root);
-        setContentView(scroll);
+
+        container.addView(scroll, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+
+        bottomBar = new LinearLayout(this);
+        bottomBar.setOrientation(LinearLayout.HORIZONTAL);
+        bottomBar.setGravity(Gravity.CENTER);
+        bottomBar.setPadding(dp(10), dp(8), dp(10), dp(8));
+        bottomBar.setBackground(shape(0xFF08130D, 0xFF24643A, 18));
+        bottomBar.setElevation(dp(12));
+        bottomBar.setAlpha(0f);
+        bottomBar.setVisibility(View.GONE);
+
+        Button colorsButton = createBottomBarButton("✦  Colores");
+        Button backgroundsButton = createBottomBarButton("▧  Fondos");
+
+        LinearLayout.LayoutParams colorParams =
+                new LinearLayout.LayoutParams(0, dp(46), 1);
+
+        LinearLayout.LayoutParams backgroundParams =
+                new LinearLayout.LayoutParams(0, dp(46), 1);
+
+        backgroundParams.leftMargin = dp(8);
+
+        bottomBar.addView(colorsButton, colorParams);
+        bottomBar.addView(backgroundsButton, backgroundParams);
+
+        colorsButton.setOnClickListener(v ->
+                Toast.makeText(
+                        MainActivity.this,
+                        "La sección Colores estará disponible próximamente.",
+                        Toast.LENGTH_SHORT).show());
+
+        backgroundsButton.setOnClickListener(v ->
+                Toast.makeText(
+                        MainActivity.this,
+                        "La sección Fondos estará disponible próximamente.",
+                        Toast.LENGTH_SHORT).show());
+
+        FrameLayout.LayoutParams barParams =
+                new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+
+        barParams.leftMargin = dp(22);
+        barParams.rightMargin = dp(22);
+        barParams.bottomMargin = dp(16);
+
+        container.addView(bottomBar, barParams);
+
+        setContentView(container);
 
         LinearLayout header = new LinearLayout(this);
         header.setGravity(Gravity.CENTER_VERTICAL);
