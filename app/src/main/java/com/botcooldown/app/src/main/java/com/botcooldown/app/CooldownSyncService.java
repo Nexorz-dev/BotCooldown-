@@ -206,7 +206,16 @@ public class CooldownSyncService extends Service {
                 item.put("alarmRequestCode", alarmId);
                 timers.put(item);
             }
-            cooldownPrefs.edit().putString(key, timers.toString()).apply();
+            // The alarm receiver validates this record before posting the notification.
+            // Commit synchronously so a process shutdown cannot leave the alarm
+            // scheduled while its validation data is still only queued for disk.
+            boolean persisted = cooldownPrefs.edit()
+                    .putString(key, timers.toString())
+                    .commit();
+            if (!persisted) {
+                Log.e(TAG, "No se pudo persistir el cooldown sincronizado " + databaseId);
+                return;
+            }
 
             Intent alarm = new Intent(this, CooldownAlarmReceiver.class);
             alarm.setAction(CooldownAlarmReceiver.ACTION_READY);
