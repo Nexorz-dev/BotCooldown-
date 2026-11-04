@@ -27,27 +27,51 @@ const client = new Client({
 const OWNER_DISCORD_ID = '401898628748279810';
 
 const cooldowns = {
-  'k!drop': 3600,
-  'k!d': 3600,
+  // K-BOT publica k!d con 15 minutos; k!drop se conserva como alias.
+  'k!drop': { regular: 900, vip: 900, megavip: 900, ultravip: 900 },
+  'k!d': { regular: 900, vip: 900, megavip: 900, ultravip: 900 },
   'k!daily': 86400,
   'k!weekly': 604800,
-  'k!megadrop': 7200,
-  'k!md': 7200,
-  'k!lucky card': 3600,
-  'k!l': 3600,
-  'k!album drop': 3600,
-  'k!ad': 3600,
-  'k!album megadrop': 7200,
-  'k!amd': 7200,
+
+  // Comandos con reducción oficial por K-PASS.
+  'k!megadrop': { regular: 7200, vip: 4800, megavip: 3600, ultravip: 1800 },
+  'k!md': { regular: 7200, vip: 4800, megavip: 3600, ultravip: 1800 },
+  'k!lucky card': { regular: 43200, vip: 32400, megavip: 25200, ultravip: 18000 },
+  'k!l': { regular: 43200, vip: 32400, megavip: 25200, ultravip: 18000 },
+  'k!album drop': { regular: 14400, vip: 10800, megavip: 7200, ultravip: 3600 },
+  'k!ad': { regular: 14400, vip: 10800, megavip: 7200, ultravip: 3600 },
+  'k!album megadrop': { regular: 43200, vip: 36000, megavip: 28800, ultravip: 21600 },
+  'k!amd': { regular: 43200, vip: 36000, megavip: 28800, ultravip: 21600 },
+
+  // Actividades K-PASS: tiempos oficiales por nivel (en segundos).
   'k!stamp drop': 3600,
   'k!sd': 3600,
-  'k!mine': 3600,
-  'k!m': 3600,
-  'k!fish': 3600,
-  'k!f': 3600,
-  'k!work': 3600,
-  'k!w': 3600
+  'k!mine': { regular: 4200, vip: 3600, megavip: 3000, ultravip: 2400 },
+  'k!m': { regular: 4200, vip: 3600, megavip: 3000, ultravip: 2400 },
+  'k!fish': { regular: 2400, vip: 1800, megavip: 1500, ultravip: 1200 },
+  'k!f': { regular: 2400, vip: 1800, megavip: 1500, ultravip: 1200 },
+  'k!work': { regular: 1200, vip: 960, megavip: 780, ultravip: 600 },
+  'k!w': { regular: 1200, vip: 960, megavip: 780, ultravip: 600 }
 };
+
+function getCooldownDuration(command, tier) {
+  const configured = cooldowns[command];
+  if (typeof configured === 'number') return configured;
+  if (!configured) return 0;
+  return configured[tier] || configured.regular || 0;
+}
+
+function normalizeKPassTier(value) {
+  const normalized = String(value || '').trim().toLowerCase()
+    .replace(/[\s_-]/g, '');
+  const tiers = {
+    '1': 'regular', regular: 'regular', normal: 'regular',
+    '2': 'vip', vip: 'vip',
+    '3': 'megavip', megavip: 'megavip',
+    '4': 'ultravip', ultravip: 'ultravip'
+  };
+  return tiers[normalized] || null;
+}
 
 const pendingAttempts = [];
 const registrationSessions = new Map();
@@ -90,6 +114,11 @@ async function initializeDatabase() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       linked_at TIMESTAMPTZ
     )
+  `);
+
+  await pool.query(`
+    ALTER TABLE botcooldown_devices
+    ADD COLUMN IF NOT EXISTS kpass_tier TEXT NOT NULL DEFAULT 'regular'
   `);
 
   await pool.query(`
@@ -148,6 +177,7 @@ async function handleDirectMessage(message) {
       '🤖 **BotCooldown - Ayuda**\n\n' +
       '• `b!register`: vincular tu cuenta con la aplicación.\n' +
       '• `b!unlink`: desvincular tu cuenta.\n' +
+      '• `b!vip`: consultar o cambiar tu K-PASS.\n' +
       '• `b!help`: mostrar esta ayuda.\n\n' +
       'Para vincularte, primero solicita un código desde la aplicación y después envía `b!register` aquí.'
     );
@@ -155,7 +185,7 @@ async function handleDirectMessage(message) {
   }
 
   if (content.toLowerCase() === 'b!register') {
-    registrationSessions.set(userId, Date.now());
+    registrationSessions.set(userId, { step: 'code', startedAt: Date.now() });
 
     await message.reply(
       '🔗 **Vinculación con BotCooldown**\n\n' +
@@ -177,15 +207,56 @@ async function handleDirectMessage(message) {
     return;
   }
 
-  if (content.toLowerCase() === 'cancelar') {
-    registrationSessions.delete(userId);
-    await message.reply('Vinculación cancelada.');
+  if (content.toLowerCase() === 'b!vip') {
+    const linkedAccount = await pool.query(`
+      SELECT kpass_tier FROM botcooldown_devices
+      WHERE discord_user_id = $1
+    `, [userId]);
+
+    if (linkedAccount.rowCount === 0) {
+      await message.reply('Primero vincula tu cuenta con BotCooldown usando `b!register`.');
+      return;
+    }
+
+    registrationSessions.set(userId, { step: 'tier', startedAt: Date.now() });
+    await message.reply(
+      '💳 **Selecciona tu K-PASS actual**\n\n' +
+      '1️⃣ Regular (sin VIP)\n2️⃣ VIP\n3️⃣ MEGAVIP\n4️⃣ ULTRAVIP\n\n' +
+      'Responde con el número o el nombre del nivel. Escribe `cancelar` para salir.'
+    );
     return;
   }
 
-  if (!registrationSessions.has(userId)) {
+  if (content.toLowerCase() === 'cancelar') {
+    registrationSessions.delete(userId);
+    await message.reply('Proceso cancelado. Si ya vinculaste tu cuenta, seguirá vinculada.');
     return;
   }
+
+  const session = registrationSessions.get(userId);
+
+  if (session && session.step === 'tier') {
+    const tier = normalizeKPassTier(content);
+    if (!tier) {
+      await message.reply('No reconocí ese nivel. Responde 1 (Regular), 2 (VIP), 3 (MEGAVIP) o 4 (ULTRAVIP).');
+      return;
+    }
+
+    await pool.query(`
+      UPDATE botcooldown_devices SET kpass_tier = $1
+      WHERE discord_user_id = $2
+    `, [tier, userId]);
+
+    registrationSessions.delete(userId);
+    const labels = { regular: 'Regular', vip: 'VIP', megavip: 'MEGAVIP', ultravip: 'ULTRAVIP' };
+    await message.reply(
+      '✅ Tu K-PASS quedó configurado como **' + labels[tier] + '**.\n' +
+      'Los próximos temporizadores usarán los enfriamientos correspondientes. Los que ya están activos no cambiarán.'
+    );
+    return;
+  }
+
+  if (!session || session.step !== 'code') return;
 
   const normalizedCode = content.toUpperCase().replace(/\s/g, '');
 
@@ -248,12 +319,14 @@ async function handleDirectMessage(message) {
 
     await client.query('COMMIT');
 
-    registrationSessions.delete(userId);
+    registrationSessions.set(userId, { step: 'tier', startedAt: Date.now() });
 
     await message.reply(
       '✅ **¡Cuenta vinculada correctamente!**\n\n' +
-      'BotCooldown ya puede recibir tus temporizadores.\n' +
-      'Puedes cerrar esta conversación y volver a la aplicación.'
+      'BotCooldown ya puede recibir tus temporizadores.\n\n' +
+      'Ahora selecciona tu K-PASS actual:\n' +
+      '1️⃣ Regular (sin VIP)\n2️⃣ VIP\n3️⃣ MEGAVIP\n4️⃣ ULTRAVIP\n\n' +
+      'Responde con el número o el nombre del nivel. Si no eliges uno, se mantendrá Regular por defecto.'
     );
 
   } catch (error) {
@@ -365,19 +438,19 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    const duration = cooldowns[command];
-
-    if (!duration) return;
+    if (!cooldowns[command]) return;
 
     const linked = await pool.query(`
-      SELECT discord_user_id
+      SELECT discord_user_id, kpass_tier
       FROM botcooldown_devices
       WHERE discord_user_id = $1
     `, [message.author.id]);
 
-    if (linked.rowCount === 0) {
-      return;
-    }
+    if (linked.rowCount === 0) return;
+
+    const tier = linked.rows[0].kpass_tier || 'regular';
+    const duration = getCooldownDuration(command, tier);
+    if (!duration) return;
 
     const attempt = {
       command,
