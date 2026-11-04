@@ -1834,7 +1834,12 @@ public class MainActivity extends Activity {
                     }
                 }
 
-            } catch (Exception ignored) {
+            } catch (Exception error) {
+                if (fromPolling) {
+                    handler.post(() -> notifyAppError(
+                            "vinculacion",
+                            "No se pudo comprobar la vinculación con Discord. La aplicación volverá a intentarlo."));
+                }
             }
         }).start();
     }
