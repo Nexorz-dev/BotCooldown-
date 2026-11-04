@@ -33,7 +33,10 @@ function findRejectedAttemptIndex(attempts, message, now = Date.now(), windowMs 
     return matchingUser.length === 1 ? attempts.indexOf(matchingUser[0]) : -1;
   }
 
-  return eligible.length === 1 ? attempts.indexOf(eligible[0]) : -1;
+  // Without a reply reference or an explicit author mention, the response
+  // cannot be attributed safely. This also protects against unlinked users
+  // issuing commands in the same channel.
+  return -1;
 }
 
 module.exports = { findRejectedAttemptIndex };
