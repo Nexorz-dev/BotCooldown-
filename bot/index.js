@@ -3,7 +3,7 @@ const { Client, GatewayIntentBits, Partials } = require('discord.js');
 const express = require('express');
 const { Pool } = require('pg');
 const crypto = require('crypto');
-const { findRejectedAttemptIndex, isRejectedCooldownMessage } = require('./pending-attempts');
+const { findRejectedAttemptIndex, isRejectedCooldownMessage, normalizeCooldownCommand } = require('./pending-attempts');
 
 const app = express();
 app.use(express.json({ limit: '20kb' }));
@@ -386,7 +386,7 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    const command = message.content.trim().toLowerCase();
+    const command = normalizeCooldownCommand(message.content);
 
     // Comando secreto de prueba, exclusivo del creador.
     if (command.startsWith('b!testcooldown')) {
