@@ -25,8 +25,8 @@ function findRejectedAttemptIndex(attempts, message, now = Date.now(), windowMs 
     text.push(embed.title || '', embed.description || '');
     for (const field of embed.fields || []) text.push(field.name || '', field.value || '');
   }
-  const mentions = [...new Set(text.join(' ').match(/<@!?(\\d+)>/g) || [])]
-    .map(value => value.match(/\\d+/)[0]);
+  const mentions = [...new Set(text.join(' ').match(/<@!?(\d+)>/g) || [])]
+    .map(value => value.match(/\d+/)[0]);
 
   if (mentions.length === 1) {
     const matchingUser = eligible.filter(attempt => attempt.discordUserId === mentions[0]);
