@@ -5,7 +5,8 @@ const assert = require('node:assert/strict');
 const {
   findRejectedAttemptIndex,
   getRejectedCommandFamily,
-  isRejectedCooldownMessage
+  isRejectedCooldownMessage,
+  normalizeCooldownCommand
 } = require('./pending-attempts');
 
 test('detects WORK duplicate rejection in Spanish and English', () => {
@@ -66,4 +67,26 @@ test('does not guess the user when a rejection has no reply reference or mention
     embeds: []
   };
   assert.equal(findRejectedAttemptIndex(attempts, message, 2000, 15000), -1);
+});
+
+test('normalizes capitalization and accidental spaces for every integrated command and alias', () => {
+  const commands = [
+    'k!drop', 'k!d', 'k!daily', 'k!weekly',
+    'k!megadrop', 'k!md', 'k!lucky card', 'k!l',
+    'k!album drop', 'k!ad', 'k!album megadrop', 'k!amd',
+    'k!stamp drop', 'k!sd', 'k!mine', 'k!m',
+    'k!fish', 'k!f', 'k!work', 'k!w'
+  ];
+
+  for (const command of commands) {
+    const spacedAndUppercase = command.replace(/^k!/, 'K! ');
+    assert.equal(normalizeCooldownCommand(spacedAndUppercase), command);
+    assert.equal(normalizeCooldownCommand(command.toUpperCase()), command);
+  }
+});
+
+test('normalizes repeated spaces without merging multi-word command names', () => {
+  assert.equal(normalizeCooldownCommand('  K!   Lucky   Card  '), 'k! lucky card');
+  assert.equal(normalizeCooldownCommand('K!  Album   MegaDrop'), 'k! album megadrop');
+  assert.equal(normalizeCooldownCommand('K!   M'), 'k! m');
 });
