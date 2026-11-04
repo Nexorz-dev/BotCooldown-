@@ -4,6 +4,7 @@ import android.Manifest;
 import android.app.Activity;
 import android.app.AlarmManager;
 import android.app.AlertDialog;
+import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
@@ -76,6 +77,9 @@ public class MainActivity extends Activity {
     private EditText secondsInput;
 
     private TextView discordStatusView;
+    private TextView renderStatusView;
+    private volatile boolean renderCheckInProgress = false;
+    private int renderConnectionState = 0;
     private TextView exactAlarmStatusView;
     private TextView batteryOptimizationStatusView;
     private Button linkButton;
@@ -115,10 +119,18 @@ public class MainActivity extends Activity {
 
     private final Handler linkHandler = new Handler(Looper.getMainLooper());
 
+    private final Runnable renderHealthPoll = new Runnable() {
+        @Override public void run() {
+            checkRenderConnection();
+            handler.postDelayed(this, 15000);
+        }
+    };
+
     private static final String CHANNEL_ID = "botcooldown_ready";
 
     private static final String API_URL =
             "https://cooldown-detector.onrender.com";
+    private static final String HEALTH_URL = API_URL + "/health";
 
     private static final String EVENTS_URL = API_URL + "/events";
     private static final String LINK_REQUEST_URL = API_URL + "/link/request";
@@ -1201,8 +1213,16 @@ public class MainActivity extends Activity {
         updateExactAlarmStatus();
         updateBatteryOptimizationStatus();
         checkLinkStatus(false);
+        handler.removeCallbacks(renderHealthPoll);
+        handler.post(renderHealthPoll);
 
         showBackgroundSetupDialogIfNeeded();
+    }
+
+    @Override
+    protected void onPause() {
+        handler.removeCallbacks(renderHealthPoll);
+        super.onPause();
     }
 
     private void showBackgroundSetupDialogIfNeeded() {
@@ -1593,6 +1613,7 @@ public class MainActivity extends Activity {
                         linkButton.setEnabled(true);
                     }
 
+                    notifyAppError("vinculacion", "No se pudo solicitar el código de Discord. Comprueba la conexión e inténtalo nuevamente.");
                     Toast.makeText(
                             MainActivity.this,
                             "Error al solicitar vinculación: "
@@ -1813,7 +1834,10 @@ public class MainActivity extends Activity {
                     }
                 }
 
-            } catch (Exception ignored) {
+            } catch (Exception error) {
+                if (fromPolling) {
+                    handler.post(() -> notifyAppError("vinculacion", "No se pudo comprobar la vinculación con Discord. La aplicación volverá a intentarlo."));
+                }
             }
         }).start();
     }
