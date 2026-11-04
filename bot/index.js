@@ -63,7 +63,7 @@ function getCooldownDuration(command, tier) {
 
 function normalizeKPassTier(value) {
   const normalized = String(value || '').trim().toLowerCase()
-    .replace(/[\\s_-]/g, '');
+    .replace(/[\s_-]/g, '');
   const tiers = {
     '1': 'regular', regular: 'regular', normal: 'regular',
     '2': 'vip', vip: 'vip',
