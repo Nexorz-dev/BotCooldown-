@@ -360,7 +360,9 @@ client.on('messageCreate', async (message) => {
         text.includes('you have already received') ||
         text.includes('you have already placed') ||
         text.includes('you recently received') ||
-        text.includes("you've already claimed");
+        text.includes("you've already claimed") ||
+        (text.includes('please wait') &&
+          text.includes('before using more commands'));
 
       if (rejected) {
         const index = findRejectedAttemptIndex(
