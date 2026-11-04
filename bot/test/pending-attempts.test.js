@@ -26,10 +26,10 @@ test('an ambiguous rejection in a shared channel cancels nobody', () => {
   assert.equal(findRejectedAttemptIndex(attempts, message, 2000, 15000), -1);
 });
 
-test('a non-referenced rejection can be matched when exactly one attempt exists', () => {
+test('an unreferenced rejection is not assigned to a pending attempt', () => {
   const attempts = [attempt('cmd-a', '111111111111111111')];
   const message = { channelId: 'channel-1', content: 'Please wait.' };
-  assert.equal(findRejectedAttemptIndex(attempts, message, 2000, 15000), 0);
+  assert.equal(findRejectedAttemptIndex(attempts, message, 2000, 15000), -1);
 });
 
 test('expired attempts are never cancelled', () => {
