@@ -1198,14 +1198,10 @@ public class MainActivity extends Activity {
 
         reloadSyncedIdsForCurrentAccount();
 
-        if (alarmManager != null && canScheduleExactAlarms()) {
+        if (alarmManager != null) {
             requestingExactAlarmPermission = false;
-
             for (Cooldown c : cooldowns) {
-                if (c.notifyWhenDone
-                        && c.endTime > System.currentTimeMillis()) {
-                    scheduleManualAlarm(c);
-                }
+                if (c.notifyWhenDone && !c.notified) scheduleManualAlarm(c);
             }
         }
 
@@ -2063,164 +2059,108 @@ public class MainActivity extends Activity {
     }
 
     private void saveSyncedCooldowns() {
-        if (preferences == null) {
-            return;
-        }
-
+        if (preferences == null) return;
         String token = getApiToken();
-
-        if (token == null || token.trim().isEmpty()) {
-            return;
-        }
-
+        if (token == null || token.trim().isEmpty()) return;
         JSONArray array = new JSONArray();
-        long now = System.currentTimeMillis();
-
         try {
             for (Cooldown c : cooldowns) {
-                if (c.serverEventId == null
-                        || c.serverEventId.trim().isEmpty()
-                        || c.endTime <= now) {
-                    continue;
-                }
-
+                if (c.serverEventId == null || c.serverEventId.trim().isEmpty()) continue;
                 JSONObject item = new JSONObject();
                 item.put("command", c.command);
                 item.put("databaseId", c.serverEventId);
                 item.put("durationMillis", c.durationMillis);
                 item.put("endTime", c.endTime);
-
+                item.put("alarmRequestCode", c.alarmRequestCode);
                 array.put(item);
             }
-
-            preferences.edit()
-                    .putString(
-                            getSyncedTimersPreferenceKey(),
-                            array.toString())
-                    .apply();
-
+            preferences.edit().putString(getSyncedTimersPreferenceKey(), array.toString()).apply();
         } catch (Exception e) {
-            android.util.Log.e(
-                    "BotCooldown",
-                    "No se pudieron guardar los temporizadores sincronizados",
-                    e);
+            android.util.Log.e("BotCooldown", "No se pudieron guardar los temporizadores sincronizados", e);
         }
     }
 
     private void restoreSyncedCooldowns() {
-        if (preferences == null || timerList == null) {
-            return;
-        }
-
+        if (preferences == null || timerList == null) return;
         String token = getApiToken();
-
-        if (token == null || token.trim().isEmpty()) {
-            return;
-        }
-
+        if (token == null || token.trim().isEmpty()) return;
         String accountHash = tokenHash(token);
-
-        if (accountHash.isEmpty()) {
-            return;
-        }
-
-        String saved = preferences.getString(
-                PREF_SYNCED_TIMERS + accountHash, "[]");
-
+        if (accountHash.isEmpty()) return;
+        String saved = preferences.getString(PREF_SYNCED_TIMERS + accountHash, "[]");
         try {
             JSONArray array = new JSONArray(saved);
-            long now = System.currentTimeMillis();
-
             for (int i = 0; i < array.length(); i++) {
                 JSONObject item = array.optJSONObject(i);
-
-                if (item == null) {
-                    continue;
-                }
-
+                if (item == null) continue;
                 String command = item.optString("command", "");
                 String databaseId = item.optString("databaseId", "");
                 long duration = item.optLong("durationMillis", 0L);
                 long endTime = item.optLong("endTime", 0L);
-
-                if (command.trim().isEmpty()
-                        || databaseId.trim().isEmpty()
-                        || duration <= 0
-                        || endTime <= now) {
-                    continue;
-                }
-
+                if (command.trim().isEmpty() || databaseId.trim().isEmpty()
+                        || duration <= 0 || endTime <= 0) continue;
                 String eventId = accountHash + ":" + databaseId;
-
-                boolean alreadyExists = false;
-
+                boolean exists = false;
                 for (Cooldown existing : cooldowns) {
-                    if (eventId.equals(existing.eventId)) {
-                        alreadyExists = true;
-                        break;
-                    }
+                    if (eventId.equals(existing.eventId)) { exists = true; break; }
                 }
-
-                if (alreadyExists) {
-                    continue;
-                }
-
+                if (exists) continue;
                 Cooldown c = new Cooldown(command, duration);
                 c.endTime = endTime;
                 c.eventId = eventId;
                 c.serverEventId = databaseId;
-                c.notifyWhenDone = false;
-
+                c.alarmRequestCode = syncedAlarmId(databaseId);
+                c.notifyWhenDone = true;
                 createCooldownCard(c);
                 cooldowns.add(c);
-
                 syncedIds.add(eventId);
-
-                updateCooldown(c);
+                if (endTime <= System.currentTimeMillis()) {
+                    c.notified = true;
+                    c.view.setText("✓  DISPONIBLE");
+                    c.view.setTextColor(GREEN);
+                } else {
+                    updateCooldown(c);
+                    scheduleManualAlarm(c);
+                }
             }
-
             saveSyncedIds();
             saveSyncedCooldowns();
-
         } catch (Exception e) {
-            android.util.Log.e(
-                    "BotCooldown",
-                    "Error al restaurar temporizadores sincronizados",
-                    e);
+            android.util.Log.e("BotCooldown", "Error al restaurar temporizadores sincronizados", e);
         }
     }
 
-    private void addSyncedCooldown(
-            String command,
-            long endTime,
-            long duration,
-            String databaseId) {
+    private int syncedAlarmId(String databaseId) {
+        return 1000000000 + (databaseId.hashCode() & 0x3fffffff);
+    }
 
+    private void addSyncedCooldown(
+            String command, long endTime, long duration, String databaseId) {
         if (command == null || command.trim().isEmpty()
                 || databaseId == null || databaseId.trim().isEmpty()
-                || endTime <= System.currentTimeMillis()
-                || duration <= 0
-                || getApiToken().trim().isEmpty()) {
-            return;
-        }
+                || endTime <= 0 || duration <= 0
+                || getApiToken().trim().isEmpty()) return;
 
         reloadSyncedIdsForCurrentAccount();
-
         String accountHash = tokenHash(getApiToken());
-
-        if (accountHash.isEmpty()) {
-            return;
-        }
-
+        if (accountHash.isEmpty()) return;
         String eventId = accountHash + ":" + databaseId;
 
         for (Cooldown existing : cooldowns) {
             if (eventId.equals(existing.eventId)) {
+                boolean changed = existing.endTime != endTime
+                        || existing.durationMillis != duration
+                        || !existing.command.equals(command);
+                existing.command = command;
                 existing.endTime = endTime;
                 existing.durationMillis = duration;
-                existing.notified = false;
-                updateCooldown(existing);
-                saveSyncedCooldowns();
+                existing.notified = endTime <= System.currentTimeMillis();
+                existing.notifyWhenDone = true;
+                if (changed) {
+                    cancelManualAlarm(existing);
+                    if (!existing.notified) scheduleManualAlarm(existing);
+                    updateCooldown(existing);
+                    saveSyncedCooldowns();
+                }
                 return;
             }
         }
@@ -2229,33 +2169,31 @@ public class MainActivity extends Activity {
         c.endTime = endTime;
         c.eventId = eventId;
         c.serverEventId = databaseId;
-        c.notifyWhenDone = false;
-
+        c.alarmRequestCode = syncedAlarmId(databaseId);
+        c.notifyWhenDone = true;
+        c.notified = endTime <= System.currentTimeMillis();
         createCooldownCard(c);
         cooldowns.add(c);
-
         syncedIds.add(eventId);
-
         if (syncedIds.size() > MAX_SAVED_SYNCED_IDS) {
             Set<String> limited = new HashSet<>();
             int count = 0;
-
             for (String id : syncedIds) {
-                if (count >= MAX_SAVED_SYNCED_IDS) {
-                    break;
-                }
-
+                if (count++ >= MAX_SAVED_SYNCED_IDS) break;
                 limited.add(id);
-                count++;
             }
-
             syncedIds.clear();
             syncedIds.addAll(limited);
         }
-
         saveSyncedIds();
         saveSyncedCooldowns();
-        updateCooldown(c);
+        if (c.notified) {
+            c.view.setText("✓  DISPONIBLE");
+            c.view.setTextColor(GREEN);
+        } else {
+            updateCooldown(c);
+            scheduleManualAlarm(c);
+        }
     }
 
     private void removeCooldownFromScreen(Cooldown c) {
@@ -2409,6 +2347,10 @@ public class MainActivity extends Activity {
                 CooldownAlarmReceiver.EXTRA_END_TIME, c.endTime);
         intent.putExtra(
                 CooldownAlarmReceiver.EXTRA_ALARM_ID, c.alarmRequestCode);
+        if (c.serverEventId != null && c.eventId != null) {
+            intent.putExtra(CooldownAlarmReceiver.EXTRA_ACCOUNT_HASH, tokenHash(getApiToken()));
+            intent.putExtra(CooldownAlarmReceiver.EXTRA_EVENT_ID, c.serverEventId);
+        }
 
         int flags = PendingIntent.FLAG_UPDATE_CURRENT;
 
@@ -2484,7 +2426,7 @@ public class MainActivity extends Activity {
     }
 
     private void cancelManualAlarm(Cooldown c) {
-        if (!c.notifyWhenDone || alarmManager == null) {
+        if (alarmManager == null || (!c.notifyWhenDone && c.serverEventId == null)) {
             return;
         }
 
