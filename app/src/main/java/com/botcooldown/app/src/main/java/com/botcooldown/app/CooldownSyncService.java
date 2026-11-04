@@ -42,6 +42,8 @@ public class CooldownSyncService extends Service {
     private static final String TAG = "CooldownSync";
     private static final String SERVICE_CHANNEL = "cooldown_sync";
     private static final String READY_CHANNEL = "botcooldown_ready";
+    private static final String ERROR_CHANNEL = "botcooldown_errors";
+    private static final int SYNC_ERROR_NOTIFICATION_ID = 3201;
 
     private static final String EVENTS_URL =
             "https://cooldown-detector.onrender.com/events";
@@ -195,6 +197,9 @@ public class CooldownSyncService extends Service {
 
             if (responseCode != HttpURLConnection.HTTP_OK) {
                 Log.e(TAG, "Render respondió HTTP " + responseCode);
+                notifySyncError(
+                        "Render respondió con un error (HTTP "
+                                + responseCode + "). La sincronización se reintentará automáticamente.");
                 return;
             }
 
@@ -221,6 +226,7 @@ public class CooldownSyncService extends Service {
             }
 
             JSONArray events = new JSONArray(response.toString());
+            clearSyncErrorNotification();
 
             for (int i = 0; i < events.length(); i++) {
 
@@ -290,6 +296,8 @@ public class CooldownSyncService extends Service {
 
         } catch (Exception e) {
             Log.e(TAG, "Error al sincronizar con Render", e);
+            notifySyncError(
+                    "No se pudo sincronizar con Render. Comprueba tu conexión; BotCooldown volverá a intentarlo automáticamente.");
 
         } finally {
             if (connection != null) {
@@ -396,6 +404,75 @@ public class CooldownSyncService extends Service {
         }, delayMillis, TimeUnit.MILLISECONDS);
     }
 
+    private void notifySyncError(String message) {
+        if (notificationManager == null) {
+            return;
+        }
+
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(
+                        android.Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
+
+        SharedPreferences errorPrefs =
+                getSharedPreferences("botcooldown_error_state", MODE_PRIVATE);
+        long now = System.currentTimeMillis();
+        long lastShown = errorPrefs.getLong("sync_error_last_shown", 0L);
+
+        if (now - lastShown < 10 * 60 * 1000L) {
+            return;
+        }
+
+        errorPrefs.edit()
+                .putLong("sync_error_last_shown", now)
+                .apply();
+
+        Intent openIntent = new Intent(this, MainActivity.class);
+        openIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+
+        PendingIntent contentIntent = PendingIntent.getActivity(
+                this,
+                SYNC_ERROR_NOTIFICATION_ID,
+                openIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+
+        Notification notification;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            notification = new Notification.Builder(this, ERROR_CHANNEL)
+                    .setSmallIcon(android.R.drawable.stat_notify_error)
+                    .setContentTitle("BotCooldown: error de sincronización")
+                    .setContentText(message)
+                    .setStyle(new Notification.BigTextStyle().bigText(message))
+                    .setContentIntent(contentIntent)
+                    .setAutoCancel(true)
+                    .build();
+        } else {
+            notification = new Notification.Builder(this)
+                    .setSmallIcon(android.R.drawable.stat_notify_error)
+                    .setContentTitle("BotCooldown: error de sincronización")
+                    .setContentText(message)
+                    .setContentIntent(contentIntent)
+                    .setAutoCancel(true)
+                    .build();
+        }
+
+        notificationManager.notify(SYNC_ERROR_NOTIFICATION_ID, notification);
+    }
+
+    private void clearSyncErrorNotification() {
+        if (notificationManager != null) {
+            notificationManager.cancel(SYNC_ERROR_NOTIFICATION_ID);
+        }
+        getSharedPreferences("botcooldown_error_state", MODE_PRIVATE)
+                .edit()
+                .putLong("sync_error_last_shown", 0L)
+                .apply();
+    }
+
     private void saveSeenEvents() {
         prefs.edit()
                 .putStringSet(
@@ -419,8 +496,18 @@ public class CooldownSyncService extends Service {
                             "Cooldowns listos",
                             NotificationManager.IMPORTANCE_DEFAULT);
 
+            NotificationChannel errorChannel =
+                    new NotificationChannel(
+                            ERROR_CHANNEL,
+                            "Avisos de errores",
+                            NotificationManager.IMPORTANCE_HIGH);
+
+            errorChannel.setDescription(
+                    "Problemas de sincronización de BotCooldown");
+
             notificationManager.createNotificationChannel(serviceChannel);
             notificationManager.createNotificationChannel(readyChannel);
+            notificationManager.createNotificationChannel(errorChannel);
         }
     }
 
