@@ -3,6 +3,7 @@ const { Client, GatewayIntentBits, Partials } = require('discord.js');
 const express = require('express');
 const { Pool } = require('pg');
 const crypto = require('crypto');
+const { findRejectedAttemptIndex } = require('./pending-attempts');
 
 const app = express();
 app.use(express.json({ limit: '20kb' }));
@@ -133,6 +134,17 @@ async function initializeDatabase() {
   `);
 
   await pool.query(`
+    ALTER TABLE botcooldown_events
+    ADD COLUMN IF NOT EXISTS source_message_id TEXT
+  `);
+
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_botcooldown_events_source_message
+    ON botcooldown_events (source_message_id)
+    WHERE source_message_id IS NOT NULL
+  `);
+
+  await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_botcooldown_events_user
     ON botcooldown_events (discord_user_id, started_at DESC)
   `);
@@ -217,7 +229,6 @@ async function handleDirectMessage(message) {
       await message.reply('Primero vincula tu cuenta con BotCooldown usando `b!register`.');
       return;
     }
-
     registrationSessions.set(userId, { step: 'tier', startedAt: Date.now() });
     await message.reply(
       '💳 **Selecciona tu K-PASS actual**\n\n' +
@@ -349,13 +360,16 @@ client.on('messageCreate', async (message) => {
         text.includes('you have already received') ||
         text.includes('you have already placed') ||
         text.includes('you recently received') ||
-        text.includes("you've already claimed");
+        text.includes("you've already claimed") ||
+        (text.includes('please wait') &&
+          text.includes('before using more commands'));
 
       if (rejected) {
-        const index = pendingAttempts.findLastIndex(
-          attempt =>
-            attempt.channelId === message.channelId &&
-            Date.now() - attempt.startedAt < rejectionWindowMs
+        const index = findRejectedAttemptIndex(
+          pendingAttempts,
+          message,
+          Date.now(),
+          rejectionWindowMs
         );
 
         if (index !== -1) {
@@ -363,7 +377,11 @@ client.on('messageCreate', async (message) => {
           clearTimeout(attempt.timeout);
 
           console.log(
-            `Cooldown rechazado para ${attempt.command}. No se registra.`
+            `Cooldown rechazado para ${attempt.command} de Discord ${attempt.discordUserId}. No se registra.`
+          );
+        } else {
+          console.warn(
+            `Respuesta de rechazo ambigua en canal ${message.channelId}; no se cancela ningún intento para evitar afectar a otro usuario.`
           );
         }
       }
@@ -416,13 +434,17 @@ client.on('messageCreate', async (message) => {
 
       await pool.query(`
         INSERT INTO botcooldown_events
-          (discord_user_id, command, duration, started_at)
-        VALUES ($1, $2, $3, $4)
+          (discord_user_id, command, duration, started_at, source_message_id)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (source_message_id)
+          WHERE source_message_id IS NOT NULL
+        DO NOTHING
       `, [
         OWNER_DISCORD_ID,
         'b!testcooldown',
         duration,
-        startedAt
+        startedAt,
+        message.id
       ]);
 
       await message.reply(
@@ -437,7 +459,6 @@ client.on('messageCreate', async (message) => {
     }
 
     if (!cooldowns[command]) return;
-
     const linked = await pool.query(`
       SELECT discord_user_id, kpass_tier
       FROM botcooldown_devices
@@ -455,6 +476,7 @@ client.on('messageCreate', async (message) => {
       duration,
       startedAt: Date.now(),
       channelId: message.channelId,
+      messageId: message.id,
       discordUserId: message.author.id,
       timeout: null
     };
@@ -470,13 +492,17 @@ client.on('messageCreate', async (message) => {
       try {
         await pool.query(`
           INSERT INTO botcooldown_events
-            (discord_user_id, command, duration, started_at)
-          VALUES ($1, $2, $3, $4)
+            (discord_user_id, command, duration, started_at, source_message_id)
+          VALUES ($1, $2, $3, $4, $5)
+          ON CONFLICT (source_message_id)
+            WHERE source_message_id IS NOT NULL
+          DO NOTHING
         `, [
           attempt.discordUserId,
           attempt.command,
           attempt.duration,
-          attempt.startedAt
+          attempt.startedAt,
+          attempt.messageId
         ]);
 
         console.log(
@@ -503,32 +529,49 @@ app.post('/link/request', async (req, res) => {
       return res.status(400).json({ error: 'Datos de instalación inválidos.' });
     }
 
+    const installationSecretHash = hash(installationSecret);
     const existing = await pool.query(`
-      SELECT discord_user_id
+      SELECT installation_secret_hash, discord_user_id
       FROM botcooldown_devices
       WHERE installation_id = $1
     `, [installationId]);
 
-    if (existing.rowCount > 0 && existing.rows[0].discord_user_id) {
-      return res.status(409).json({
-        error: 'Esta instalación ya está vinculada. Desvincúlala primero.'
-      });
+    if (existing.rowCount > 0) {
+      if (existing.rows[0].discord_user_id) {
+        return res.status(409).json({
+          error: 'Esta instalación ya está vinculada. Desvincúlala primero.'
+        });
+      }
+
+      if (existing.rows[0].installation_secret_hash !== installationSecretHash) {
+        return res.status(403).json({
+          error: 'El secreto de esta instalación no coincide. No se puede reclamar esta instalación.'
+        });
+      }
     }
 
     const code = generateCode();
     const codeHash = hash(code.replace('-', ''));
     const expiresAt = Date.now() + linkCodeLifetimeMs;
 
-    await pool.query(`
+    const registered = await pool.query(`
       INSERT INTO botcooldown_devices
         (installation_id, installation_secret_hash, link_code_hash, code_expires_at)
       VALUES ($1, $2, $3, $4)
       ON CONFLICT (installation_id)
       DO UPDATE SET
-        installation_secret_hash = EXCLUDED.installation_secret_hash,
         link_code_hash = EXCLUDED.link_code_hash,
         code_expires_at = EXCLUDED.code_expires_at
-    `, [installationId, hash(installationSecret), codeHash, expiresAt]);
+      WHERE botcooldown_devices.installation_secret_hash = EXCLUDED.installation_secret_hash
+        AND botcooldown_devices.discord_user_id IS NULL
+      RETURNING installation_id
+    `, [installationId, installationSecretHash, codeHash, expiresAt]);
+
+    if (registered.rowCount === 0) {
+      return res.status(409).json({
+        error: 'La instalación cambió o fue vinculada durante la solicitud. Vuelve a intentarlo.'
+      });
+    }
 
     res.json({
       code,
@@ -657,7 +700,6 @@ app.get('/events', authenticate, async (req, res) => {
     res.status(500).json({ error: 'No se pudieron consultar los eventos.' });
   }
 });
-
 // Eliminar un evento sincronizado sin que vuelva a aparecer.
 app.delete('/events/:id', authenticate, async (req, res) => {
   try {
