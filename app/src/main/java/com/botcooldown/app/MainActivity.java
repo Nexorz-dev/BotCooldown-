@@ -75,6 +75,9 @@ public class MainActivity extends Activity {
     private EditText secondsInput;
 
     private TextView discordStatusView;
+    private TextView renderStatusView;
+    private volatile boolean renderCheckInProgress = false;
+    private int renderConnectionState = 0;
     private Button linkButton;
     private Button unlinkButton;
 
@@ -112,11 +115,20 @@ public class MainActivity extends Activity {
 
     private final Handler linkHandler = new Handler(Looper.getMainLooper());
 
+    private final Runnable renderHealthPoll = new Runnable() {
+        @Override
+        public void run() {
+            checkRenderConnection();
+            handler.postDelayed(this, 15000);
+        }
+    };
+
     private static final String CHANNEL_ID = "botcooldown_ready";
 
     private static final String API_URL =
             "https://cooldown-detector.onrender.com";
 
+    private static final String HEALTH_URL = API_URL + "/health";
     private static final String EVENTS_URL = API_URL + "/events";
     private static final String LINK_REQUEST_URL = API_URL + "/link/request";
     private static final String LINK_STATUS_URL = API_URL + "/link/status";
@@ -1198,7 +1210,16 @@ public class MainActivity extends Activity {
 
         checkLinkStatus(false);
 
+        handler.removeCallbacks(renderHealthPoll);
+        handler.post(renderHealthPoll);
+
         showBackgroundSetupDialogIfNeeded();
+    }
+
+    @Override
+    protected void onPause() {
+        handler.removeCallbacks(renderHealthPoll);
+        super.onPause();
     }
 
     private void showBackgroundSetupDialogIfNeeded() {
@@ -1872,6 +1893,79 @@ public class MainActivity extends Activity {
                 }
             });
         }).start();
+    }
+
+    private void checkRenderConnection() {
+        if (renderCheckInProgress) {
+            return;
+        }
+
+        renderCheckInProgress = true;
+
+        new Thread(() -> {
+            HttpURLConnection connection = null;
+            boolean connected = false;
+
+            try {
+                connection = (HttpURLConnection)
+                        new URL(HEALTH_URL).openConnection();
+                connection.setRequestMethod("GET");
+                connection.setConnectTimeout(8000);
+                connection.setReadTimeout(8000);
+                connection.setRequestProperty("Accept", "application/json");
+
+                int responseCode = connection.getResponseCode();
+                if (responseCode == HttpURLConnection.HTTP_OK) {
+                    StringBuilder responseText = new StringBuilder();
+                    try (BufferedReader reader = new BufferedReader(
+                            new InputStreamReader(
+                                    connection.getInputStream(), StandardCharsets.UTF_8))) {
+                        String line;
+                        while ((line = reader.readLine()) != null) {
+                            responseText.append(line);
+                        }
+                    }
+
+                    JSONObject health = new JSONObject(responseText.toString());
+                    connected = health.optBoolean("ok", false)
+                            && "connected".equals(
+                                    health.optString("database", ""));
+                }
+            } catch (Exception ignored) {
+                connected = false;
+            } finally {
+                if (connection != null) {
+                    connection.disconnect();
+                }
+                renderCheckInProgress = false;
+            }
+
+            final boolean result = connected;
+            handler.post(() -> {
+                if (!isFinishing() && !isDestroyed()) {
+                    updateRenderStatus(result ? 1 : -1);
+                }
+            });
+        }).start();
+    }
+
+    private void updateRenderStatus(int state) {
+        renderConnectionState = state;
+
+        if (renderStatusView == null) {
+            return;
+        }
+
+        if (state > 0) {
+            renderStatusView.setText("●  RENDER CONECTADO");
+            renderStatusView.setTextColor(GREEN);
+        } else if (state < 0) {
+            renderStatusView.setText("●  SIN CONEXIÓN CON RENDER");
+            renderStatusView.setTextColor(0xFFFF8585);
+        } else {
+            renderStatusView.setText("●  COMPROBANDO CONEXIÓN A RENDER...");
+            renderStatusView.setTextColor(MUTED);
+        }
     }
 
     private void updateDiscordStatus(boolean linked) {
@@ -2626,6 +2720,13 @@ public class MainActivity extends Activity {
         statusParams.topMargin = dp(12);
         discordCard.addView(discordStatusView, statusParams);
 
+        renderStatusView = text(
+                "●  COMPROBANDO CONEXIÓN A RENDER...", 11, MUTED, true);
+        LinearLayout.LayoutParams renderStatusParams = params(-1, -2);
+        renderStatusParams.topMargin = dp(9);
+        discordCard.addView(renderStatusView, renderStatusParams);
+        updateRenderStatus(renderConnectionState);
+
         linkButton = new Button(this);
         linkButton.setText("＋  VINCULAR DISCORD");
         linkButton.setTextColor(Color.rgb(4, 9, 12));
@@ -2952,6 +3053,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         handler.removeCallbacks(tick);
+        handler.removeCallbacks(renderHealthPoll);
         linkHandler.removeCallbacks(linkPoll);
 
         try {
