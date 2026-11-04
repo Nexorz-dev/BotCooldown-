@@ -7,6 +7,7 @@ on:
     branches:
       - main
       - fix/persistent-synced-cooldown-notifications
+      - integration/render-error-alerts-persistent-cooldowns
 
 permissions:
   contents: read
