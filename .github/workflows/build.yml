@@ -6,6 +6,9 @@ on:
   push:
     branches:
       - main
+      - fix/persistent-synced-cooldown-notifications
+      - integration/render-error-alerts-persistent-cooldowns
+      - integration/combined-main-and-persistent-cooldowns
 
 permissions:
   contents: read
