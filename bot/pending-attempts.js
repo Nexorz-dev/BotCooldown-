@@ -6,6 +6,19 @@ const COMMAND_FAMILIES = {
   mine: ['k!mine', 'k!m']
 };
 
+/**
+ * Normalize user-entered K-Bot commands before cooldown lookup.
+ * Accepts uppercase/lowercase and accidental spaces after the prefix,
+ * while preserving meaningful spaces in multi-word commands.
+ */
+function normalizeCooldownCommand(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^k!\s*/, 'k!')
+    .replace(/\s+/g, ' ');
+}
+
 function getMessageText(message) {
   const embedText = (message.embeds || []).map(embed => [
     embed.title,
@@ -87,5 +100,6 @@ function findRejectedAttemptIndex(attempts, message, now = Date.now(), windowMs 
 module.exports = {
   findRejectedAttemptIndex,
   getRejectedCommandFamily,
-  isRejectedCooldownMessage
+  isRejectedCooldownMessage,
+  normalizeCooldownCommand
 };
