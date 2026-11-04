@@ -1,11 +1,12 @@
-
 {
   "name": "cooldown-detector",
   "version": "1.0.0",
   "description": "Detector multiusuario de comandos de Discord para Cooldown",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "test": "node --test",
+    "check": "node --check index.js && node --check pending-attempts.js"
   },
   "dependencies": {
     "discord.js": "^14.19.3",
