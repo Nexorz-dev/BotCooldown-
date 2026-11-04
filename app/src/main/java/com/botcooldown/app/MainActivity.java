@@ -1974,6 +1974,19 @@ public class MainActivity extends Activity {
             notifyAppError(
                     "render",
                     "No se puede conectar con Render o la base de datos no responde. Comprueba tu conexión e inténtalo de nuevo.");
+        } else if (state > 0 && previousState < 0) {
+            int notificationId = 3100 + Math.abs("render".hashCode() % 500);
+            notificationManager.cancel(notificationId);
+            if ("render".equals(preferences.getString("last_error_key", ""))) {
+                preferences.edit()
+                        .remove("last_error_key")
+                        .remove("last_error_time")
+                        .apply();
+            }
+            Toast.makeText(
+                    this,
+                    "Conexión con Render restablecida",
+                    Toast.LENGTH_SHORT).show();
         }
     }
 
