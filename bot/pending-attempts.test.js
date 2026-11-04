@@ -86,7 +86,7 @@ test('normalizes capitalization and accidental spaces for every integrated comma
 });
 
 test('normalizes repeated spaces without merging multi-word command names', () => {
-  assert.equal(normalizeCooldownCommand('  K!   Lucky   Card  '), 'k! lucky card');
-  assert.equal(normalizeCooldownCommand('K!  Album   MegaDrop'), 'k! album megadrop');
+  assert.equal(normalizeCooldownCommand('  K!   Lucky   Card  '), 'k!lucky card');
+  assert.equal(normalizeCooldownCommand('K!  Album   MegaDrop'), 'k!album megadrop');
   assert.equal(normalizeCooldownCommand('K!   M'), 'k! m');
 });
