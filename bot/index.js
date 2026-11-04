@@ -36,8 +36,8 @@ const cooldowns = {
   // Comandos con reducción oficial por K-PASS.
   'k!megadrop': { regular: 7200, vip: 4800, megavip: 3600, ultravip: 1800 },
   'k!md': { regular: 7200, vip: 4800, megavip: 3600, ultravip: 1800 },
-  'k!lucky card': { regular: 43200, vip: 32400, megavip: 28800, ultravip: 21600 },
-  'k!l': { regular: 43200, vip: 32400, megavip: 28800, ultravip: 21600 },
+  'k!lucky card': { regular: 43200, vip: 32400, megavip: 25200, ultravip: 18000 },
+  'k!l': { regular: 43200, vip: 32400, megavip: 25200, ultravip: 18000 },
   'k!album drop': { regular: 14400, vip: 10800, megavip: 7200, ultravip: 3600 },
   'k!ad': { regular: 14400, vip: 10800, megavip: 7200, ultravip: 3600 },
   'k!album megadrop': { regular: 43200, vip: 36000, megavip: 28800, ultravip: 21600 },
