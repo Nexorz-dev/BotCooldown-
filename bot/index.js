@@ -3,7 +3,7 @@ const { Client, GatewayIntentBits, Partials } = require('discord.js');
 const express = require('express');
 const { Pool } = require('pg');
 const crypto = require('crypto');
-const { findRejectedAttemptIndex } = require('./pending-attempts');
+const { findRejectedAttemptIndex, isRejectedCooldownMessage, normalizeCooldownCommand } = require('./pending-attempts');
 
 const app = express();
 app.use(express.json({ limit: '20kb' }));
@@ -354,15 +354,7 @@ client.on('messageCreate', async (message) => {
     if (message.author.bot) {
       const text = getMessageText(message);
 
-      const rejected =
-        text.includes('you already claimed') ||
-        text.includes('you already received') ||
-        text.includes('you have already received') ||
-        text.includes('you have already placed') ||
-        text.includes('you recently received') ||
-        text.includes("you've already claimed") ||
-        (text.includes('please wait') &&
-          text.includes('before using more commands'));
+      const rejected = isRejectedCooldownMessage(text);
 
       if (rejected) {
         const index = findRejectedAttemptIndex(
@@ -394,7 +386,7 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    const command = message.content.trim().toLowerCase();
+    const command = normalizeCooldownCommand(message.content);
 
     // Comando secreto de prueba, exclusivo del creador.
     if (command.startsWith('b!testcooldown')) {
