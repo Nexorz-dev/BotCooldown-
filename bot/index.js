@@ -608,6 +608,16 @@ app.delete('/events/:id', authenticate, async (req, res) => {
   }
 });
 
+app.get('/health', async (req, res) => {
+  try {
+    await pool.query('SELECT 1');
+    res.status(200).json({ ok: true, database: 'connected' });
+  } catch (error) {
+    console.error('Comprobación de salud fallida:', error);
+    res.status(503).json({ ok: false, database: 'disconnected' });
+  }
+});
+
 app.get('/', (req, res) => {
   res.send('BotCooldown multiusuario está funcionando.');
 });
