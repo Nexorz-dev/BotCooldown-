@@ -43,15 +43,15 @@ const cooldowns = {
   'k!album megadrop': { regular: 43200, vip: 36000, megavip: 28800, ultravip: 21600 },
   'k!amd': { regular: 43200, vip: 36000, megavip: 28800, ultravip: 21600 },
 
-  // Comandos propios sin reducción VIP publicada: conservan sus tiempos.
+  // Actividades K-PASS: tiempos oficiales por nivel (en segundos).
   'k!stamp drop': 3600,
   'k!sd': 3600,
-  'k!mine': 3600,
-  'k!m': 3600,
-  'k!fish': 3600,
-  'k!f': 3600,
-  'k!work': 3600,
-  'k!w': 3600
+  'k!mine': { regular: 4200, vip: 3600, megavip: 3000, ultravip: 2400 },
+  'k!m': { regular: 4200, vip: 3600, megavip: 3000, ultravip: 2400 },
+  'k!fish': { regular: 2400, vip: 1800, megavip: 1500, ultravip: 1200 },
+  'k!f': { regular: 2400, vip: 1800, megavip: 1500, ultravip: 1200 },
+  'k!work': { regular: 1200, vip: 960, megavip: 780, ultravip: 600 },
+  'k!w': { regular: 1200, vip: 960, megavip: 780, ultravip: 600 }
 };
 
 function getCooldownDuration(command, tier) {
