@@ -4,6 +4,7 @@ import android.Manifest;
 import android.app.Activity;
 import android.app.AlarmManager;
 import android.app.AlertDialog;
+import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
@@ -26,7 +27,6 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.PowerManager;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -76,8 +76,9 @@ public class MainActivity extends Activity {
     private EditText secondsInput;
 
     private TextView discordStatusView;
-    private TextView exactAlarmStatusView;
-    private TextView batteryOptimizationStatusView;
+    private TextView renderStatusView;
+    private volatile boolean renderCheckInProgress = false;
+    private int renderConnectionState = 0;
     private Button linkButton;
     private Button unlinkButton;
 
@@ -115,11 +116,20 @@ public class MainActivity extends Activity {
 
     private final Handler linkHandler = new Handler(Looper.getMainLooper());
 
+    private final Runnable renderHealthPoll = new Runnable() {
+        @Override
+        public void run() {
+            checkRenderConnection();
+            handler.postDelayed(this, 15000);
+        }
+    };
+
     private static final String CHANNEL_ID = "botcooldown_ready";
 
     private static final String API_URL =
             "https://cooldown-detector.onrender.com";
 
+    private static final String HEALTH_URL = API_URL + "/health";
     private static final String EVENTS_URL = API_URL + "/events";
     private static final String LINK_REQUEST_URL = API_URL + "/link/request";
     private static final String LINK_STATUS_URL = API_URL + "/link/status";
@@ -1190,19 +1200,23 @@ public class MainActivity extends Activity {
 
         if (alarmManager != null) {
             requestingExactAlarmPermission = false;
-
             for (Cooldown c : cooldowns) {
-                if (c.notifyWhenDone && !c.notified) {
-                    scheduleManualAlarm(c);
-                }
+                if (c.notifyWhenDone && !c.notified) scheduleManualAlarm(c);
             }
         }
 
-        updateExactAlarmStatus();
-        updateBatteryOptimizationStatus();
         checkLinkStatus(false);
 
+        handler.removeCallbacks(renderHealthPoll);
+        handler.post(renderHealthPoll);
+
         showBackgroundSetupDialogIfNeeded();
+    }
+
+    @Override
+    protected void onPause() {
+        handler.removeCallbacks(renderHealthPoll);
+        super.onPause();
     }
 
     private void showBackgroundSetupDialogIfNeeded() {
@@ -1244,7 +1258,7 @@ public class MainActivity extends Activity {
                 .setTitle("Actividad en segundo plano")
                 .setView(layout)
                 .setPositiveButton("Configurar ahora", null)
-                .setNegativeButton("Entendido", null)
+                .setNegativeButton("Ya lo activé", null)
                 .create();
 
         dialog.setCancelable(false);
@@ -1307,8 +1321,8 @@ public class MainActivity extends Activity {
 
                     Toast.makeText(
                             MainActivity.this,
-                            "Recuerda mantener permitida la actividad en segundo plano.",
-                            Toast.LENGTH_LONG).show();
+                            "Configuración confirmada",
+                            Toast.LENGTH_SHORT).show();
                 });
             }
         });
@@ -1401,7 +1415,6 @@ public class MainActivity extends Activity {
             }
 
             for (Cooldown c : previousSynced) {
-                cancelManualAlarm(c);
                 cooldowns.remove(c);
 
                 if (timerList != null && c.card != null) {
@@ -1592,6 +1605,10 @@ public class MainActivity extends Activity {
                     if (linkButton != null) {
                         linkButton.setEnabled(true);
                     }
+
+                    notifyAppError(
+                            "vinculacion",
+                            "No se pudo solicitar el código de Discord. Comprueba la conexión e inténtalo nuevamente.");
 
                     Toast.makeText(
                             MainActivity.this,
@@ -1813,7 +1830,12 @@ public class MainActivity extends Activity {
                     }
                 }
 
-            } catch (Exception ignored) {
+            } catch (Exception error) {
+                if (fromPolling) {
+                    handler.post(() -> notifyAppError(
+                            "vinculacion",
+                            "No se pudo comprobar la vinculación con Discord. La aplicación volverá a intentarlo."));
+                }
             }
         }).start();
     }
@@ -1877,6 +1899,97 @@ public class MainActivity extends Activity {
                 }
             });
         }).start();
+    }
+
+    private void checkRenderConnection() {
+        if (renderCheckInProgress) {
+            return;
+        }
+
+        renderCheckInProgress = true;
+
+        new Thread(() -> {
+            HttpURLConnection connection = null;
+            boolean connected = false;
+
+            try {
+                connection = (HttpURLConnection)
+                        new URL(HEALTH_URL).openConnection();
+                connection.setRequestMethod("GET");
+                connection.setConnectTimeout(8000);
+                connection.setReadTimeout(8000);
+                connection.setRequestProperty("Accept", "application/json");
+
+                int responseCode = connection.getResponseCode();
+                if (responseCode == HttpURLConnection.HTTP_OK) {
+                    StringBuilder responseText = new StringBuilder();
+                    try (BufferedReader reader = new BufferedReader(
+                            new InputStreamReader(
+                                    connection.getInputStream(), StandardCharsets.UTF_8))) {
+                        String line;
+                        while ((line = reader.readLine()) != null) {
+                            responseText.append(line);
+                        }
+                    }
+
+                    JSONObject health = new JSONObject(responseText.toString());
+                    connected = health.optBoolean("ok", false)
+                            && "connected".equals(
+                                    health.optString("database", ""));
+                }
+            } catch (Exception ignored) {
+                connected = false;
+            } finally {
+                if (connection != null) {
+                    connection.disconnect();
+                }
+                renderCheckInProgress = false;
+            }
+
+            final boolean result = connected;
+            handler.post(() -> {
+                if (!isFinishing() && !isDestroyed()) {
+                    updateRenderStatus(result ? 1 : -1);
+                }
+            });
+        }).start();
+    }
+
+    private void updateRenderStatus(int state) {
+        int previousState = renderConnectionState;
+        renderConnectionState = state;
+
+        if (renderStatusView != null) {
+            if (state > 0) {
+                renderStatusView.setText("●  RENDER CONECTADO");
+                renderStatusView.setTextColor(GREEN);
+            } else if (state < 0) {
+                renderStatusView.setText("●  SIN CONEXIÓN CON RENDER");
+                renderStatusView.setTextColor(0xFFFF8585);
+            } else {
+                renderStatusView.setText("●  COMPROBANDO CONEXIÓN A RENDER...");
+                renderStatusView.setTextColor(MUTED);
+            }
+        }
+
+        if (state < 0 && previousState >= 0) {
+            notifyAppError(
+                    "render",
+                    "No se puede conectar con Render o la base de datos no responde. Comprueba tu conexión e inténtalo de nuevo.");
+        } else if (state > 0 && previousState < 0) {
+            int notificationId = 3100 + Math.abs("render".hashCode() % 500);
+            notificationManager.cancel(notificationId);
+            if ("render".equals(preferences.getString("last_error_key", ""))) {
+                preferences.edit()
+                        .remove("last_error_key")
+                        .remove("last_error_time")
+                        .apply();
+            }
+            Toast.makeText(
+                    this,
+                    "Conexión con Render restablecida",
+                    Toast.LENGTH_SHORT).show();
+        }
     }
 
     private void updateDiscordStatus(boolean linked) {
@@ -2148,6 +2261,10 @@ public class MainActivity extends Activity {
                     deleteButton.setEnabled(true);
                     deleteButton.setText("Eliminar");
 
+                    notifyAppError(
+                            "sincronizacion",
+                            "No se pudo eliminar el cooldown del servidor. Inténtalo nuevamente.");
+
                     Toast.makeText(
                             MainActivity.this,
                             "No se pudo eliminar el evento del servidor. Inténtalo nuevamente.",
@@ -2171,6 +2288,9 @@ public class MainActivity extends Activity {
                 startService(intent);
             }
         } catch (Exception e) {
+            notifyAppError(
+                    "sincronizacion",
+                    "No se pudo iniciar el servicio de sincronización. Reinicia la aplicación e inténtalo nuevamente.");
             Toast.makeText(this,
                     "No se pudo iniciar la sincronización",
                     Toast.LENGTH_LONG).show();
@@ -2180,83 +2300,6 @@ public class MainActivity extends Activity {
     // =========================================================
     // ALARMAS Y NOTIFICACIONES
     // =========================================================
-
-    private void updateExactAlarmStatus() {
-        if (exactAlarmStatusView == null) {
-            return;
-        }
-
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-            exactAlarmStatusView.setText("✓ Alarmas exactas: disponibles en este Android");
-            exactAlarmStatusView.setTextColor(GREEN);
-            return;
-        }
-
-        boolean allowed = canScheduleExactAlarms();
-        exactAlarmStatusView.setText(allowed
-                ? "✓ Alarmas exactas: disponibles"
-                : "! Alarmas exactas: acceso pendiente");
-        exactAlarmStatusView.setTextColor(allowed ? GREEN : GOLD);
-    }
-
-    private void updateBatteryOptimizationStatus() {
-        if (batteryOptimizationStatusView == null) {
-            return;
-        }
-
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
-            batteryOptimizationStatusView.setText(
-                    "✓ Optimización de batería: no aplica en este Android");
-            batteryOptimizationStatusView.setTextColor(GREEN);
-            return;
-        }
-
-        PowerManager powerManager =
-                (PowerManager) getSystemService(POWER_SERVICE);
-        boolean exempt = powerManager != null
-                && powerManager.isIgnoringBatteryOptimizations(getPackageName());
-
-        batteryOptimizationStatusView.setText(exempt
-                ? "✓ Exención de optimización de batería: activa"
-                : "! Exención de optimización de batería: no activa");
-        batteryOptimizationStatusView.setTextColor(exempt ? GREEN : GOLD);
-    }
-
-    private void openExactAlarmSettingsFromButton() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-            Toast.makeText(this, "Este Android no requiere ese permiso especial.",
-                    Toast.LENGTH_LONG).show();
-            return;
-        }
-
-        // Abrimos la pantalla aunque Android permita alarmas por una
-        // exención de batería: esa capacidad no demuestra por sí sola
-        // que el acceso especial visible al usuario esté concedido.
-        Uri appUri = Uri.parse("package:" + getPackageName());
-        try {
-            Intent requestIntent = new Intent(
-                    Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM);
-            requestIntent.setData(appUri);
-            startActivity(requestIntent);
-        } catch (Exception exactAlarmError) {
-            android.util.Log.w("BotCooldown",
-                    "No se pudo abrir el permiso de alarmas exactas",
-                    exactAlarmError);
-            try {
-                Intent appSettingsIntent = new Intent(
-                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
-                appSettingsIntent.setData(appUri);
-                startActivity(appSettingsIntent);
-            } catch (Exception appSettingsError) {
-                android.util.Log.e("BotCooldown",
-                        "No se pudieron abrir los ajustes de la aplicación",
-                        appSettingsError);
-                Toast.makeText(this,
-                        "No se pudieron abrir los ajustes. Busca BotCooldown en Ajustes > Aplicaciones.",
-                        Toast.LENGTH_LONG).show();
-            }
-        }
-    }
 
     private boolean canScheduleExactAlarms() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -2269,7 +2312,6 @@ public class MainActivity extends Activity {
 
     private void requestExactAlarmPermission() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S
-                || canScheduleExactAlarms()
                 || requestingExactAlarmPermission) {
             return;
         }
@@ -2278,40 +2320,20 @@ public class MainActivity extends Activity {
 
         Toast.makeText(
                 this,
-                "BotCooldown necesita permiso de alarmas exactas. Actívalo para recibir avisos puntuales.",
+                "Activa el permiso de alarmas exactas para mayor precisión",
                 Toast.LENGTH_LONG).show();
 
-        Uri appUri = Uri.parse("package:" + getPackageName());
-
         try {
-            Intent exactAlarmIntent = new Intent(
+            Intent intent = new Intent(
                     Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM);
-            exactAlarmIntent.setData(appUri);
-            startActivity(exactAlarmIntent);
-            return;
-        } catch (Exception exactAlarmError) {
-            android.util.Log.w(
-                    "BotCooldown",
-                    "No se pudo abrir el ajuste de alarmas exactas",
-                    exactAlarmError);
-        }
-
-        // Algunos fabricantes no implementan la pantalla específica.
-        // Como alternativa, abrir los ajustes generales de esta aplicación.
-        try {
-            Intent appSettingsIntent = new Intent(
-                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
-            appSettingsIntent.setData(appUri);
-            startActivity(appSettingsIntent);
-        } catch (Exception appSettingsError) {
+            intent.setData(Uri.parse("package:" + getPackageName()));
+            startActivity(intent);
+        } catch (Exception e) {
             requestingExactAlarmPermission = false;
-            android.util.Log.e(
-                    "BotCooldown",
-                    "No se pudieron abrir los ajustes de la aplicación",
-                    appSettingsError);
+
             Toast.makeText(
                     this,
-                    "Abre Ajustes > Aplicaciones > BotCooldown y busca Alarmas y recordatorios.",
+                    "Activa las alarmas exactas en los ajustes de la app",
                     Toast.LENGTH_LONG).show();
         }
     }
@@ -2342,7 +2364,7 @@ public class MainActivity extends Activity {
 
     private void scheduleManualAlarm(Cooldown c) {
         if (!c.notifyWhenDone || alarmManager == null
-                || c.endTime <= 0 || c.notified) {
+                || c.endTime <= System.currentTimeMillis()) {
             return;
         }
 
@@ -2393,6 +2415,9 @@ public class MainActivity extends Activity {
             }
 
         } catch (Exception e) {
+            notifyAppError(
+                    "alarmas",
+                    "No se pudo programar el aviso de un cooldown. Revisa los permisos de alarmas de BotCooldown.");
             Toast.makeText(
                     this,
                     "No se pudo programar el aviso",
@@ -2444,6 +2469,9 @@ public class MainActivity extends Activity {
                     .apply();
 
         } catch (Exception e) {
+            notifyAppError(
+                    "guardado",
+                    "No se pudieron guardar los temporizadores en el teléfono.");
             Toast.makeText(
                     this,
                     "No se pudieron guardar los temporizadores",
@@ -2675,6 +2703,13 @@ public class MainActivity extends Activity {
         statusParams.topMargin = dp(12);
         discordCard.addView(discordStatusView, statusParams);
 
+        renderStatusView = text(
+                "●  COMPROBANDO CONEXIÓN A RENDER...", 11, MUTED, true);
+        LinearLayout.LayoutParams renderStatusParams = params(-1, -2);
+        renderStatusParams.topMargin = dp(9);
+        discordCard.addView(renderStatusView, renderStatusParams);
+        updateRenderStatus(renderConnectionState);
+
         linkButton = new Button(this);
         linkButton.setText("＋  VINCULAR DISCORD");
         linkButton.setTextColor(Color.rgb(4, 9, 12));
@@ -2725,63 +2760,6 @@ public class MainActivity extends Activity {
 
         secondsInput = makeInput("Segundos (0 a 59)", true);
         addInput(form, secondsInput);
-
-        exactAlarmStatusView = text("Comprobando permiso de alarmas exactas...",
-                12, MUTED, true);
-        LinearLayout.LayoutParams alarmStatusParams = params(-1, -2);
-        alarmStatusParams.topMargin = dp(14);
-        form.addView(exactAlarmStatusView, alarmStatusParams);
-
-        batteryOptimizationStatusView = text(
-                "Comprobando optimización de batería...",
-                12, MUTED, true);
-        LinearLayout.LayoutParams batteryStatusParams = params(-1, -2);
-        batteryStatusParams.topMargin = dp(10);
-        form.addView(batteryOptimizationStatusView, batteryStatusParams);
-
-        TextView backgroundHelp = text(
-                "IMPORTANTE: permite la actividad en segundo plano en los ajustes de batería de tu OPPO. "
-                        + "Android no ofrece una comprobación universal para ese ajuste del fabricante.",
-                12, MUTED, false);
-        LinearLayout.LayoutParams backgroundHelpParams = params(-1, -2);
-        backgroundHelpParams.topMargin = dp(10);
-        form.addView(backgroundHelp, backgroundHelpParams);
-
-        Button backgroundSettingsButton = new Button(this);
-        backgroundSettingsButton.setText("CONFIGURAR ACTIVIDAD EN SEGUNDO PLANO");
-        backgroundSettingsButton.setTextColor(GREEN);
-        backgroundSettingsButton.setTextSize(12);
-        backgroundSettingsButton.setAllCaps(false);
-        backgroundSettingsButton.setBackground(transparentShape(
-                0xFF102219, 0xFF24643A, 12, 215));
-        LinearLayout.LayoutParams backgroundButtonParams = params(-1, dp(44));
-        backgroundButtonParams.topMargin = dp(8);
-        form.addView(backgroundSettingsButton, backgroundButtonParams);
-        backgroundSettingsButton.setOnClickListener(v -> {
-            try {
-                Intent intent = new Intent(
-                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
-                intent.setData(Uri.parse("package:" + getPackageName()));
-                startActivity(intent);
-            } catch (Exception e) {
-                Toast.makeText(this,
-                        "Abre Ajustes > Aplicaciones > BotCooldown.",
-                        Toast.LENGTH_LONG).show();
-            }
-        });
-
-        Button exactAlarmSettingsButton = new Button(this);
-        exactAlarmSettingsButton.setText("VERIFICAR / CONFIGURAR ALARMAS");
-        exactAlarmSettingsButton.setTextColor(GREEN);
-        exactAlarmSettingsButton.setTextSize(12);
-        exactAlarmSettingsButton.setAllCaps(false);
-        exactAlarmSettingsButton.setBackground(transparentShape(
-                0xFF102219, 0xFF24643A, 12, 215));
-        LinearLayout.LayoutParams exactAlarmButtonParams = params(-1, dp(44));
-        exactAlarmButtonParams.topMargin = dp(8);
-        form.addView(exactAlarmSettingsButton, exactAlarmButtonParams);
-        exactAlarmSettingsButton.setOnClickListener(v ->
-                openExactAlarmSettingsFromButton());
 
         Button start = new Button(this);
         start.setText("＋   INICIAR COOLDOWN");
@@ -3031,6 +3009,66 @@ public class MainActivity extends Activity {
     // NOTIFICACIONES
     // =========================================================
 
+    private static final String ERROR_CHANNEL_ID = "botcooldown_errors";
+
+    private void notifyAppError(String category, String message) {
+        if (notificationManager == null || preferences == null) {
+            return;
+        }
+
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
+
+        String key = category == null ? "general" : category;
+        long now = System.currentTimeMillis();
+        String savedKey = preferences.getString("last_error_key", "");
+        long savedAt = preferences.getLong("last_error_time", 0L);
+
+        if (key.equals(savedKey) && now - savedAt < 10 * 60 * 1000L) {
+            return;
+        }
+
+        preferences.edit()
+                .putString("last_error_key", key)
+                .putLong("last_error_time", now)
+                .apply();
+
+        Intent openIntent = new Intent(this, MainActivity.class);
+        openIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+
+        int notificationId = 3100 + Math.abs(key.hashCode() % 500);
+        PendingIntent contentIntent = PendingIntent.getActivity(
+                this, notificationId, openIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+
+        Notification notification;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            notification = new Notification.Builder(this, ERROR_CHANNEL_ID)
+                    .setSmallIcon(android.R.drawable.stat_notify_error)
+                    .setContentTitle("BotCooldown: " + category)
+                    .setContentText(message)
+                    .setStyle(new Notification.BigTextStyle().bigText(message))
+                    .setContentIntent(contentIntent)
+                    .setAutoCancel(true)
+                    .build();
+        } else {
+            notification = new Notification.Builder(this)
+                    .setSmallIcon(android.R.drawable.stat_notify_error)
+                    .setContentTitle("BotCooldown: " + category)
+                    .setContentText(message)
+                    .setContentIntent(contentIntent)
+                    .setAutoCancel(true)
+                    .build();
+        }
+
+        notificationManager.notify(notificationId, notification);
+    }
+
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(
@@ -3042,6 +3080,14 @@ public class MainActivity extends Activity {
                     "Avisos cuando un comando esté disponible");
 
             notificationManager.createNotificationChannel(channel);
+
+            NotificationChannel errorChannel = new NotificationChannel(
+                    ERROR_CHANNEL_ID,
+                    "Avisos de errores",
+                    NotificationManager.IMPORTANCE_HIGH);
+            errorChannel.setDescription(
+                    "Problemas importantes de conexión, sincronización y alarmas");
+            notificationManager.createNotificationChannel(errorChannel);
         }
     }
 
@@ -3058,6 +3104,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         handler.removeCallbacks(tick);
+        handler.removeCallbacks(renderHealthPoll);
         linkHandler.removeCallbacks(linkPoll);
 
         try {
