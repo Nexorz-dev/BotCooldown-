@@ -1,5 +1,7 @@
 'use strict';
 
+// Run this regression suite whenever the integration branch changes backend behavior.
+
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { findRejectedAttemptIndex } = require('../pending-attempts');
