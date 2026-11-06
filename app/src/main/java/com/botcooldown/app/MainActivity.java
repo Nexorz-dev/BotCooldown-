@@ -27,6 +27,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -79,6 +80,8 @@ public class MainActivity extends Activity {
     private TextView renderStatusView;
     private volatile boolean renderCheckInProgress = false;
     private int renderConnectionState = 0;
+    private TextView exactAlarmStatusView;
+    private TextView batteryOptimizationStatusView;
     private Button linkButton;
     private Button unlinkButton;
 
@@ -117,8 +120,7 @@ public class MainActivity extends Activity {
     private final Handler linkHandler = new Handler(Looper.getMainLooper());
 
     private final Runnable renderHealthPoll = new Runnable() {
-        @Override
-        public void run() {
+        @Override public void run() {
             checkRenderConnection();
             handler.postDelayed(this, 15000);
         }
@@ -128,8 +130,8 @@ public class MainActivity extends Activity {
 
     private static final String API_URL =
             "https://cooldown-detector.onrender.com";
-
     private static final String HEALTH_URL = API_URL + "/health";
+
     private static final String EVENTS_URL = API_URL + "/events";
     private static final String LINK_REQUEST_URL = API_URL + "/link/request";
     private static final String LINK_STATUS_URL = API_URL + "/link/status";
@@ -1198,19 +1200,19 @@ public class MainActivity extends Activity {
 
         reloadSyncedIdsForCurrentAccount();
 
-        if (alarmManager != null && canScheduleExactAlarms()) {
+        if (alarmManager != null) {
             requestingExactAlarmPermission = false;
 
             for (Cooldown c : cooldowns) {
-                if (c.notifyWhenDone
-                        && c.endTime > System.currentTimeMillis()) {
+                if (c.notifyWhenDone && !c.notified) {
                     scheduleManualAlarm(c);
                 }
             }
         }
 
+        updateExactAlarmStatus();
+        updateBatteryOptimizationStatus();
         checkLinkStatus(false);
-
         handler.removeCallbacks(renderHealthPoll);
         handler.post(renderHealthPoll);
 
@@ -1262,7 +1264,7 @@ public class MainActivity extends Activity {
                 .setTitle("Actividad en segundo plano")
                 .setView(layout)
                 .setPositiveButton("Configurar ahora", null)
-                .setNegativeButton("Ya lo activé", null)
+                .setNegativeButton("Entendido", null)
                 .create();
 
         dialog.setCancelable(false);
@@ -1325,8 +1327,8 @@ public class MainActivity extends Activity {
 
                     Toast.makeText(
                             MainActivity.this,
-                            "Configuración confirmada",
-                            Toast.LENGTH_SHORT).show();
+                            "Recuerda mantener permitida la actividad en segundo plano.",
+                            Toast.LENGTH_LONG).show();
                 });
             }
         });
@@ -1419,6 +1421,7 @@ public class MainActivity extends Activity {
             }
 
             for (Cooldown c : previousSynced) {
+                cancelManualAlarm(c);
                 cooldowns.remove(c);
 
                 if (timerList != null && c.card != null) {
@@ -1610,10 +1613,7 @@ public class MainActivity extends Activity {
                         linkButton.setEnabled(true);
                     }
 
-                    notifyAppError(
-                            "vinculacion",
-                            "No se pudo solicitar el código de Discord. Comprueba la conexión e inténtalo nuevamente.");
-
+                    notifyAppError("vinculacion", "No se pudo solicitar el código de Discord. Comprueba la conexión e inténtalo nuevamente.");
                     Toast.makeText(
                             MainActivity.this,
                             "Error al solicitar vinculación: "
@@ -1836,9 +1836,7 @@ public class MainActivity extends Activity {
 
             } catch (Exception error) {
                 if (fromPolling) {
-                    handler.post(() -> notifyAppError(
-                            "vinculacion",
-                            "No se pudo comprobar la vinculación con Discord. La aplicación volverá a intentarlo."));
+                    handler.post(() -> notifyAppError("vinculacion", "No se pudo comprobar la vinculación con Discord. La aplicación volverá a intentarlo."));
                 }
             }
         }).start();
@@ -1905,56 +1903,40 @@ public class MainActivity extends Activity {
         }).start();
     }
 
+
     private void checkRenderConnection() {
-        if (renderCheckInProgress) {
-            return;
-        }
-
+        if (renderCheckInProgress) return;
         renderCheckInProgress = true;
-
         new Thread(() -> {
             HttpURLConnection connection = null;
             boolean connected = false;
-
             try {
-                connection = (HttpURLConnection)
-                        new URL(HEALTH_URL).openConnection();
+                connection = (HttpURLConnection) new URL(HEALTH_URL).openConnection();
                 connection.setRequestMethod("GET");
                 connection.setConnectTimeout(8000);
                 connection.setReadTimeout(8000);
                 connection.setRequestProperty("Accept", "application/json");
-
                 int responseCode = connection.getResponseCode();
                 if (responseCode == HttpURLConnection.HTTP_OK) {
                     StringBuilder responseText = new StringBuilder();
                     try (BufferedReader reader = new BufferedReader(
-                            new InputStreamReader(
-                                    connection.getInputStream(), StandardCharsets.UTF_8))) {
+                            new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
                         String line;
-                        while ((line = reader.readLine()) != null) {
-                            responseText.append(line);
-                        }
+                        while ((line = reader.readLine()) != null) responseText.append(line);
                     }
-
                     JSONObject health = new JSONObject(responseText.toString());
                     connected = health.optBoolean("ok", false)
-                            && "connected".equals(
-                                    health.optString("database", ""));
+                            && "connected".equals(health.optString("database", ""));
                 }
             } catch (Exception ignored) {
                 connected = false;
             } finally {
-                if (connection != null) {
-                    connection.disconnect();
-                }
+                if (connection != null) connection.disconnect();
                 renderCheckInProgress = false;
             }
-
             final boolean result = connected;
             handler.post(() -> {
-                if (!isFinishing() && !isDestroyed()) {
-                    updateRenderStatus(result ? 1 : -1);
-                }
+                if (!isFinishing() && !isDestroyed()) updateRenderStatus(result ? 1 : -1);
             });
         }).start();
     }
@@ -1962,7 +1944,6 @@ public class MainActivity extends Activity {
     private void updateRenderStatus(int state) {
         int previousState = renderConnectionState;
         renderConnectionState = state;
-
         if (renderStatusView != null) {
             if (state > 0) {
                 renderStatusView.setText("●  RENDER CONECTADO");
@@ -1975,24 +1956,15 @@ public class MainActivity extends Activity {
                 renderStatusView.setTextColor(MUTED);
             }
         }
-
         if (state < 0 && previousState >= 0) {
-            notifyAppError(
-                    "render",
-                    "No se puede conectar con Render o la base de datos no responde. Comprueba tu conexión e inténtalo de nuevo.");
+            notifyAppError("render", "No se puede conectar con Render o la base de datos no responde. Comprueba tu conexión e inténtalo de nuevo.");
         } else if (state > 0 && previousState < 0) {
             int notificationId = 3100 + Math.abs("render".hashCode() % 500);
             notificationManager.cancel(notificationId);
             if ("render".equals(preferences.getString("last_error_key", ""))) {
-                preferences.edit()
-                        .remove("last_error_key")
-                        .remove("last_error_time")
-                        .apply();
+                preferences.edit().remove("last_error_key").remove("last_error_time").apply();
             }
-            Toast.makeText(
-                    this,
-                    "Conexión con Render restablecida",
-                    Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Conexión con Render restablecida", Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -2063,164 +2035,108 @@ public class MainActivity extends Activity {
     }
 
     private void saveSyncedCooldowns() {
-        if (preferences == null) {
-            return;
-        }
-
+        if (preferences == null) return;
         String token = getApiToken();
-
-        if (token == null || token.trim().isEmpty()) {
-            return;
-        }
-
+        if (token == null || token.trim().isEmpty()) return;
         JSONArray array = new JSONArray();
-        long now = System.currentTimeMillis();
-
         try {
             for (Cooldown c : cooldowns) {
-                if (c.serverEventId == null
-                        || c.serverEventId.trim().isEmpty()
-                        || c.endTime <= now) {
-                    continue;
-                }
-
+                if (c.serverEventId == null || c.serverEventId.trim().isEmpty()) continue;
                 JSONObject item = new JSONObject();
                 item.put("command", c.command);
                 item.put("databaseId", c.serverEventId);
                 item.put("durationMillis", c.durationMillis);
                 item.put("endTime", c.endTime);
-
+                item.put("alarmRequestCode", c.alarmRequestCode);
                 array.put(item);
             }
-
-            preferences.edit()
-                    .putString(
-                            getSyncedTimersPreferenceKey(),
-                            array.toString())
-                    .apply();
-
+            preferences.edit().putString(getSyncedTimersPreferenceKey(), array.toString()).apply();
         } catch (Exception e) {
-            android.util.Log.e(
-                    "BotCooldown",
-                    "No se pudieron guardar los temporizadores sincronizados",
-                    e);
+            android.util.Log.e("BotCooldown", "No se pudieron guardar los temporizadores sincronizados", e);
         }
     }
 
     private void restoreSyncedCooldowns() {
-        if (preferences == null || timerList == null) {
-            return;
-        }
-
+        if (preferences == null || timerList == null) return;
         String token = getApiToken();
-
-        if (token == null || token.trim().isEmpty()) {
-            return;
-        }
-
+        if (token == null || token.trim().isEmpty()) return;
         String accountHash = tokenHash(token);
-
-        if (accountHash.isEmpty()) {
-            return;
-        }
-
-        String saved = preferences.getString(
-                PREF_SYNCED_TIMERS + accountHash, "[]");
-
+        if (accountHash.isEmpty()) return;
+        String saved = preferences.getString(PREF_SYNCED_TIMERS + accountHash, "[]");
         try {
             JSONArray array = new JSONArray(saved);
-            long now = System.currentTimeMillis();
-
             for (int i = 0; i < array.length(); i++) {
                 JSONObject item = array.optJSONObject(i);
-
-                if (item == null) {
-                    continue;
-                }
-
+                if (item == null) continue;
                 String command = item.optString("command", "");
                 String databaseId = item.optString("databaseId", "");
                 long duration = item.optLong("durationMillis", 0L);
                 long endTime = item.optLong("endTime", 0L);
-
-                if (command.trim().isEmpty()
-                        || databaseId.trim().isEmpty()
-                        || duration <= 0
-                        || endTime <= now) {
-                    continue;
-                }
-
+                if (command.trim().isEmpty() || databaseId.trim().isEmpty()
+                        || duration <= 0 || endTime <= 0) continue;
                 String eventId = accountHash + ":" + databaseId;
-
-                boolean alreadyExists = false;
-
+                boolean exists = false;
                 for (Cooldown existing : cooldowns) {
-                    if (eventId.equals(existing.eventId)) {
-                        alreadyExists = true;
-                        break;
-                    }
+                    if (eventId.equals(existing.eventId)) { exists = true; break; }
                 }
-
-                if (alreadyExists) {
-                    continue;
-                }
-
+                if (exists) continue;
                 Cooldown c = new Cooldown(command, duration);
                 c.endTime = endTime;
                 c.eventId = eventId;
                 c.serverEventId = databaseId;
-                c.notifyWhenDone = false;
-
+                c.alarmRequestCode = syncedAlarmId(databaseId);
+                c.notifyWhenDone = true;
                 createCooldownCard(c);
                 cooldowns.add(c);
-
                 syncedIds.add(eventId);
-
-                updateCooldown(c);
+                if (endTime <= System.currentTimeMillis()) {
+                    c.notified = true;
+                    c.view.setText("✓  DISPONIBLE");
+                    c.view.setTextColor(GREEN);
+                } else {
+                    updateCooldown(c);
+                    scheduleManualAlarm(c);
+                }
             }
-
             saveSyncedIds();
             saveSyncedCooldowns();
-
         } catch (Exception e) {
-            android.util.Log.e(
-                    "BotCooldown",
-                    "Error al restaurar temporizadores sincronizados",
-                    e);
+            android.util.Log.e("BotCooldown", "Error al restaurar temporizadores sincronizados", e);
         }
     }
 
-    private void addSyncedCooldown(
-            String command,
-            long endTime,
-            long duration,
-            String databaseId) {
+    private int syncedAlarmId(String databaseId) {
+        return 1000000000 + (databaseId.hashCode() & 0x3fffffff);
+    }
 
+    private void addSyncedCooldown(
+            String command, long endTime, long duration, String databaseId) {
         if (command == null || command.trim().isEmpty()
                 || databaseId == null || databaseId.trim().isEmpty()
-                || endTime <= System.currentTimeMillis()
-                || duration <= 0
-                || getApiToken().trim().isEmpty()) {
-            return;
-        }
+                || endTime <= 0 || duration <= 0
+                || getApiToken().trim().isEmpty()) return;
 
         reloadSyncedIdsForCurrentAccount();
-
         String accountHash = tokenHash(getApiToken());
-
-        if (accountHash.isEmpty()) {
-            return;
-        }
-
+        if (accountHash.isEmpty()) return;
         String eventId = accountHash + ":" + databaseId;
 
         for (Cooldown existing : cooldowns) {
             if (eventId.equals(existing.eventId)) {
+                boolean changed = existing.endTime != endTime
+                        || existing.durationMillis != duration
+                        || !existing.command.equals(command);
+                existing.command = command;
                 existing.endTime = endTime;
                 existing.durationMillis = duration;
-                existing.notified = false;
-                updateCooldown(existing);
-                saveSyncedCooldowns();
+                existing.notified = endTime <= System.currentTimeMillis();
+                existing.notifyWhenDone = true;
+                if (changed) {
+                    cancelManualAlarm(existing);
+                    if (!existing.notified) scheduleManualAlarm(existing);
+                    updateCooldown(existing);
+                    saveSyncedCooldowns();
+                }
                 return;
             }
         }
@@ -2229,33 +2145,31 @@ public class MainActivity extends Activity {
         c.endTime = endTime;
         c.eventId = eventId;
         c.serverEventId = databaseId;
-        c.notifyWhenDone = false;
-
+        c.alarmRequestCode = syncedAlarmId(databaseId);
+        c.notifyWhenDone = true;
+        c.notified = endTime <= System.currentTimeMillis();
         createCooldownCard(c);
         cooldowns.add(c);
-
         syncedIds.add(eventId);
-
         if (syncedIds.size() > MAX_SAVED_SYNCED_IDS) {
             Set<String> limited = new HashSet<>();
             int count = 0;
-
             for (String id : syncedIds) {
-                if (count >= MAX_SAVED_SYNCED_IDS) {
-                    break;
-                }
-
+                if (count++ >= MAX_SAVED_SYNCED_IDS) break;
                 limited.add(id);
-                count++;
             }
-
             syncedIds.clear();
             syncedIds.addAll(limited);
         }
-
         saveSyncedIds();
         saveSyncedCooldowns();
-        updateCooldown(c);
+        if (c.notified) {
+            c.view.setText("✓  DISPONIBLE");
+            c.view.setTextColor(GREEN);
+        } else {
+            updateCooldown(c);
+            scheduleManualAlarm(c);
+        }
     }
 
     private void removeCooldownFromScreen(Cooldown c) {
@@ -2322,10 +2236,7 @@ public class MainActivity extends Activity {
                 } else {
                     deleteButton.setEnabled(true);
                     deleteButton.setText("Eliminar");
-
-                    notifyAppError(
-                            "sincronizacion",
-                            "No se pudo eliminar el cooldown del servidor. Inténtalo nuevamente.");
+                    notifyAppError("sincronizacion", "No se pudo eliminar el cooldown del servidor. Inténtalo nuevamente.");
 
                     Toast.makeText(
                             MainActivity.this,
@@ -2350,9 +2261,7 @@ public class MainActivity extends Activity {
                 startService(intent);
             }
         } catch (Exception e) {
-            notifyAppError(
-                    "sincronizacion",
-                    "No se pudo iniciar el servicio de sincronización. Reinicia la aplicación e inténtalo nuevamente.");
+            notifyAppError("sincronizacion", "No se pudo iniciar el servicio de sincronización. Reinicia la aplicación e inténtalo nuevamente.");
             Toast.makeText(this,
                     "No se pudo iniciar la sincronización",
                     Toast.LENGTH_LONG).show();
@@ -2362,6 +2271,83 @@ public class MainActivity extends Activity {
     // =========================================================
     // ALARMAS Y NOTIFICACIONES
     // =========================================================
+
+    private void updateExactAlarmStatus() {
+        if (exactAlarmStatusView == null) {
+            return;
+        }
+
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            exactAlarmStatusView.setText("✓ Alarmas exactas: disponibles en este Android");
+            exactAlarmStatusView.setTextColor(GREEN);
+            return;
+        }
+
+        boolean allowed = canScheduleExactAlarms();
+        exactAlarmStatusView.setText(allowed
+                ? "✓ Alarmas exactas: disponibles"
+                : "! Alarmas exactas: acceso pendiente");
+        exactAlarmStatusView.setTextColor(allowed ? GREEN : GOLD);
+    }
+
+    private void updateBatteryOptimizationStatus() {
+        if (batteryOptimizationStatusView == null) {
+            return;
+        }
+
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            batteryOptimizationStatusView.setText(
+                    "✓ Optimización de batería: no aplica en este Android");
+            batteryOptimizationStatusView.setTextColor(GREEN);
+            return;
+        }
+
+        PowerManager powerManager =
+                (PowerManager) getSystemService(POWER_SERVICE);
+        boolean exempt = powerManager != null
+                && powerManager.isIgnoringBatteryOptimizations(getPackageName());
+
+        batteryOptimizationStatusView.setText(exempt
+                ? "✓ Exención de optimización de batería: activa"
+                : "! Exención de optimización de batería: no activa");
+        batteryOptimizationStatusView.setTextColor(exempt ? GREEN : GOLD);
+    }
+
+    private void openExactAlarmSettingsFromButton() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            Toast.makeText(this, "Este Android no requiere ese permiso especial.",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        // Abrimos la pantalla aunque Android permita alarmas por una
+        // exención de batería: esa capacidad no demuestra por sí sola
+        // que el acceso especial visible al usuario esté concedido.
+        Uri appUri = Uri.parse("package:" + getPackageName());
+        try {
+            Intent requestIntent = new Intent(
+                    Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM);
+            requestIntent.setData(appUri);
+            startActivity(requestIntent);
+        } catch (Exception exactAlarmError) {
+            android.util.Log.w("BotCooldown",
+                    "No se pudo abrir el permiso de alarmas exactas",
+                    exactAlarmError);
+            try {
+                Intent appSettingsIntent = new Intent(
+                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                appSettingsIntent.setData(appUri);
+                startActivity(appSettingsIntent);
+            } catch (Exception appSettingsError) {
+                android.util.Log.e("BotCooldown",
+                        "No se pudieron abrir los ajustes de la aplicación",
+                        appSettingsError);
+                Toast.makeText(this,
+                        "No se pudieron abrir los ajustes. Busca BotCooldown en Ajustes > Aplicaciones.",
+                        Toast.LENGTH_LONG).show();
+            }
+        }
+    }
 
     private boolean canScheduleExactAlarms() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -2374,6 +2360,7 @@ public class MainActivity extends Activity {
 
     private void requestExactAlarmPermission() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S
+                || canScheduleExactAlarms()
                 || requestingExactAlarmPermission) {
             return;
         }
@@ -2382,20 +2369,40 @@ public class MainActivity extends Activity {
 
         Toast.makeText(
                 this,
-                "Activa el permiso de alarmas exactas para mayor precisión",
+                "BotCooldown necesita permiso de alarmas exactas. Actívalo para recibir avisos puntuales.",
                 Toast.LENGTH_LONG).show();
 
-        try {
-            Intent intent = new Intent(
-                    Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM);
-            intent.setData(Uri.parse("package:" + getPackageName()));
-            startActivity(intent);
-        } catch (Exception e) {
-            requestingExactAlarmPermission = false;
+        Uri appUri = Uri.parse("package:" + getPackageName());
 
+        try {
+            Intent exactAlarmIntent = new Intent(
+                    Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM);
+            exactAlarmIntent.setData(appUri);
+            startActivity(exactAlarmIntent);
+            return;
+        } catch (Exception exactAlarmError) {
+            android.util.Log.w(
+                    "BotCooldown",
+                    "No se pudo abrir el ajuste de alarmas exactas",
+                    exactAlarmError);
+        }
+
+        // Algunos fabricantes no implementan la pantalla específica.
+        // Como alternativa, abrir los ajustes generales de esta aplicación.
+        try {
+            Intent appSettingsIntent = new Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+            appSettingsIntent.setData(appUri);
+            startActivity(appSettingsIntent);
+        } catch (Exception appSettingsError) {
+            requestingExactAlarmPermission = false;
+            android.util.Log.e(
+                    "BotCooldown",
+                    "No se pudieron abrir los ajustes de la aplicación",
+                    appSettingsError);
             Toast.makeText(
                     this,
-                    "Activa las alarmas exactas en los ajustes de la app",
+                    "Abre Ajustes > Aplicaciones > BotCooldown y busca Alarmas y recordatorios.",
                     Toast.LENGTH_LONG).show();
         }
     }
@@ -2409,6 +2416,10 @@ public class MainActivity extends Activity {
                 CooldownAlarmReceiver.EXTRA_END_TIME, c.endTime);
         intent.putExtra(
                 CooldownAlarmReceiver.EXTRA_ALARM_ID, c.alarmRequestCode);
+        if (c.serverEventId != null && c.eventId != null) {
+            intent.putExtra(CooldownAlarmReceiver.EXTRA_ACCOUNT_HASH, tokenHash(getApiToken()));
+            intent.putExtra(CooldownAlarmReceiver.EXTRA_EVENT_ID, c.serverEventId);
+        }
 
         int flags = PendingIntent.FLAG_UPDATE_CURRENT;
 
@@ -2422,7 +2433,7 @@ public class MainActivity extends Activity {
 
     private void scheduleManualAlarm(Cooldown c) {
         if (!c.notifyWhenDone || alarmManager == null
-                || c.endTime <= System.currentTimeMillis()) {
+                || c.endTime <= 0 || c.notified) {
             return;
         }
 
@@ -2473,9 +2484,7 @@ public class MainActivity extends Activity {
             }
 
         } catch (Exception e) {
-            notifyAppError(
-                    "alarmas",
-                    "No se pudo programar el aviso de un cooldown. Revisa los permisos de alarmas de BotCooldown.");
+            notifyAppError("alarmas", "No se pudo programar el aviso de un cooldown. Revisa los permisos de alarmas de BotCooldown.");
             Toast.makeText(
                     this,
                     "No se pudo programar el aviso",
@@ -2484,7 +2493,7 @@ public class MainActivity extends Activity {
     }
 
     private void cancelManualAlarm(Cooldown c) {
-        if (!c.notifyWhenDone || alarmManager == null) {
+        if (alarmManager == null || (!c.notifyWhenDone && c.serverEventId == null)) {
             return;
         }
 
@@ -2527,9 +2536,7 @@ public class MainActivity extends Activity {
                     .apply();
 
         } catch (Exception e) {
-            notifyAppError(
-                    "guardado",
-                    "No se pudieron guardar los temporizadores en el teléfono.");
+            notifyAppError("guardado", "No se pudieron guardar los temporizadores en el teléfono.");
             Toast.makeText(
                     this,
                     "No se pudieron guardar los temporizadores",
@@ -2761,8 +2768,7 @@ public class MainActivity extends Activity {
         statusParams.topMargin = dp(12);
         discordCard.addView(discordStatusView, statusParams);
 
-        renderStatusView = text(
-                "●  COMPROBANDO CONEXIÓN A RENDER...", 11, MUTED, true);
+        renderStatusView = text("●  COMPROBANDO CONEXIÓN A RENDER...", 11, MUTED, true);
         LinearLayout.LayoutParams renderStatusParams = params(-1, -2);
         renderStatusParams.topMargin = dp(9);
         discordCard.addView(renderStatusView, renderStatusParams);
@@ -2818,6 +2824,63 @@ public class MainActivity extends Activity {
 
         secondsInput = makeInput("Segundos (0 a 59)", true);
         addInput(form, secondsInput);
+
+        exactAlarmStatusView = text("Comprobando permiso de alarmas exactas...",
+                12, MUTED, true);
+        LinearLayout.LayoutParams alarmStatusParams = params(-1, -2);
+        alarmStatusParams.topMargin = dp(14);
+        form.addView(exactAlarmStatusView, alarmStatusParams);
+
+        batteryOptimizationStatusView = text(
+                "Comprobando optimización de batería...",
+                12, MUTED, true);
+        LinearLayout.LayoutParams batteryStatusParams = params(-1, -2);
+        batteryStatusParams.topMargin = dp(10);
+        form.addView(batteryOptimizationStatusView, batteryStatusParams);
+
+        TextView backgroundHelp = text(
+                "IMPORTANTE: permite la actividad en segundo plano en los ajustes de batería de tu OPPO. "
+                        + "Android no ofrece una comprobación universal para ese ajuste del fabricante.",
+                12, MUTED, false);
+        LinearLayout.LayoutParams backgroundHelpParams = params(-1, -2);
+        backgroundHelpParams.topMargin = dp(10);
+        form.addView(backgroundHelp, backgroundHelpParams);
+
+        Button backgroundSettingsButton = new Button(this);
+        backgroundSettingsButton.setText("CONFIGURAR ACTIVIDAD EN SEGUNDO PLANO");
+        backgroundSettingsButton.setTextColor(GREEN);
+        backgroundSettingsButton.setTextSize(12);
+        backgroundSettingsButton.setAllCaps(false);
+        backgroundSettingsButton.setBackground(transparentShape(
+                0xFF102219, 0xFF24643A, 12, 215));
+        LinearLayout.LayoutParams backgroundButtonParams = params(-1, dp(44));
+        backgroundButtonParams.topMargin = dp(8);
+        form.addView(backgroundSettingsButton, backgroundButtonParams);
+        backgroundSettingsButton.setOnClickListener(v -> {
+            try {
+                Intent intent = new Intent(
+                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                intent.setData(Uri.parse("package:" + getPackageName()));
+                startActivity(intent);
+            } catch (Exception e) {
+                Toast.makeText(this,
+                        "Abre Ajustes > Aplicaciones > BotCooldown.",
+                        Toast.LENGTH_LONG).show();
+            }
+        });
+
+        Button exactAlarmSettingsButton = new Button(this);
+        exactAlarmSettingsButton.setText("VERIFICAR / CONFIGURAR ALARMAS");
+        exactAlarmSettingsButton.setTextColor(GREEN);
+        exactAlarmSettingsButton.setTextSize(12);
+        exactAlarmSettingsButton.setAllCaps(false);
+        exactAlarmSettingsButton.setBackground(transparentShape(
+                0xFF102219, 0xFF24643A, 12, 215));
+        LinearLayout.LayoutParams exactAlarmButtonParams = params(-1, dp(44));
+        exactAlarmButtonParams.topMargin = dp(8);
+        form.addView(exactAlarmSettingsButton, exactAlarmButtonParams);
+        exactAlarmSettingsButton.setOnClickListener(v ->
+                openExactAlarmSettingsFromButton());
 
         Button start = new Button(this);
         start.setText("＋   INICIAR COOLDOWN");
@@ -3067,43 +3130,27 @@ public class MainActivity extends Activity {
     // NOTIFICACIONES
     // =========================================================
 
+
     private static final String ERROR_CHANNEL_ID = "botcooldown_errors";
 
     private void notifyAppError(String category, String message) {
-        if (notificationManager == null || preferences == null) {
-            return;
-        }
-
+        if (notificationManager == null || preferences == null) return;
         if (Build.VERSION.SDK_INT >= 33
                 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
-                != PackageManager.PERMISSION_GRANTED) {
-            return;
-        }
-
+                != PackageManager.PERMISSION_GRANTED) return;
         String key = category == null ? "general" : category;
         long now = System.currentTimeMillis();
         String savedKey = preferences.getString("last_error_key", "");
         long savedAt = preferences.getLong("last_error_time", 0L);
-
-        if (key.equals(savedKey) && now - savedAt < 10 * 60 * 1000L) {
-            return;
-        }
-
-        preferences.edit()
-                .putString("last_error_key", key)
-                .putLong("last_error_time", now)
-                .apply();
+        if (key.equals(savedKey) && now - savedAt < 10 * 60 * 1000L) return;
+        preferences.edit().putString("last_error_key", key).putLong("last_error_time", now).apply();
 
         Intent openIntent = new Intent(this, MainActivity.class);
-        openIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK
-                | Intent.FLAG_ACTIVITY_CLEAR_TOP
+        openIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP
                 | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-
         int notificationId = 3100 + Math.abs(key.hashCode() % 500);
-        PendingIntent contentIntent = PendingIntent.getActivity(
-                this, notificationId, openIntent,
+        PendingIntent contentIntent = PendingIntent.getActivity(this, notificationId, openIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-
         Notification notification;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             notification = new Notification.Builder(this, ERROR_CHANNEL_ID)
@@ -3111,19 +3158,14 @@ public class MainActivity extends Activity {
                     .setContentTitle("BotCooldown: " + category)
                     .setContentText(message)
                     .setStyle(new Notification.BigTextStyle().bigText(message))
-                    .setContentIntent(contentIntent)
-                    .setAutoCancel(true)
-                    .build();
+                    .setContentIntent(contentIntent).setAutoCancel(true).build();
         } else {
             notification = new Notification.Builder(this)
                     .setSmallIcon(android.R.drawable.stat_notify_error)
                     .setContentTitle("BotCooldown: " + category)
-                    .setContentText(message)
-                    .setContentIntent(contentIntent)
-                    .setAutoCancel(true)
-                    .build();
+                    .setContentText(message).setContentIntent(contentIntent)
+                    .setAutoCancel(true).build();
         }
-
         notificationManager.notify(notificationId, notification);
     }
 
@@ -3138,13 +3180,10 @@ public class MainActivity extends Activity {
                     "Avisos cuando un comando esté disponible");
 
             notificationManager.createNotificationChannel(channel);
-
             NotificationChannel errorChannel = new NotificationChannel(
-                    ERROR_CHANNEL_ID,
-                    "Avisos de errores",
+                    ERROR_CHANNEL_ID, "Avisos de errores",
                     NotificationManager.IMPORTANCE_HIGH);
-            errorChannel.setDescription(
-                    "Problemas importantes de conexión, sincronización y alarmas");
+            errorChannel.setDescription("Problemas importantes de conexión, sincronización y alarmas");
             notificationManager.createNotificationChannel(errorChannel);
         }
     }

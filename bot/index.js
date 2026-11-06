@@ -3,6 +3,7 @@ const { Client, GatewayIntentBits, Partials } = require('discord.js');
 const express = require('express');
 const { Pool } = require('pg');
 const crypto = require('crypto');
+const { findRejectedAttemptIndex, isRejectedCooldownMessage, normalizeCooldownCommand } = require('./pending-attempts');
 
 const app = express();
 app.use(express.json({ limit: '20kb' }));
@@ -27,27 +28,51 @@ const client = new Client({
 const OWNER_DISCORD_ID = '401898628748279810';
 
 const cooldowns = {
-  'k!drop': 3600,
-  'k!d': 3600,
+  // K-BOT publica k!d con 15 minutos; k!drop se conserva como alias.
+  'k!drop': { regular: 900, vip: 900, megavip: 900, ultravip: 900 },
+  'k!d': { regular: 900, vip: 900, megavip: 900, ultravip: 900 },
   'k!daily': 86400,
   'k!weekly': 604800,
-  'k!megadrop': 7200,
-  'k!md': 7200,
-  'k!lucky card': 3600,
-  'k!l': 3600,
-  'k!album drop': 3600,
-  'k!ad': 3600,
-  'k!album megadrop': 7200,
-  'k!amd': 7200,
+
+  // Comandos con reducción oficial por K-PASS.
+  'k!megadrop': { regular: 7200, vip: 4800, megavip: 3600, ultravip: 1800 },
+  'k!md': { regular: 7200, vip: 4800, megavip: 3600, ultravip: 1800 },
+  'k!lucky card': { regular: 43200, vip: 32400, megavip: 25200, ultravip: 18000 },
+  'k!l': { regular: 43200, vip: 32400, megavip: 25200, ultravip: 18000 },
+  'k!album drop': { regular: 14400, vip: 10800, megavip: 7200, ultravip: 3600 },
+  'k!ad': { regular: 14400, vip: 10800, megavip: 7200, ultravip: 3600 },
+  'k!album megadrop': { regular: 43200, vip: 36000, megavip: 28800, ultravip: 21600 },
+  'k!amd': { regular: 43200, vip: 36000, megavip: 28800, ultravip: 21600 },
+
+  // Actividades K-PASS: tiempos oficiales por nivel (en segundos).
   'k!stamp drop': 3600,
   'k!sd': 3600,
-  'k!mine': 3600,
-  'k!m': 3600,
-  'k!fish': 3600,
-  'k!f': 3600,
-  'k!work': 3600,
-  'k!w': 3600
+  'k!mine': { regular: 4200, vip: 3600, megavip: 3000, ultravip: 2400 },
+  'k!m': { regular: 4200, vip: 3600, megavip: 3000, ultravip: 2400 },
+  'k!fish': { regular: 2400, vip: 1800, megavip: 1500, ultravip: 1200 },
+  'k!f': { regular: 2400, vip: 1800, megavip: 1500, ultravip: 1200 },
+  'k!work': { regular: 1200, vip: 960, megavip: 780, ultravip: 600 },
+  'k!w': { regular: 1200, vip: 960, megavip: 780, ultravip: 600 }
 };
+
+function getCooldownDuration(command, tier) {
+  const configured = cooldowns[command];
+  if (typeof configured === 'number') return configured;
+  if (!configured) return 0;
+  return configured[tier] || configured.regular || 0;
+}
+
+function normalizeKPassTier(value) {
+  const normalized = String(value || '').trim().toLowerCase()
+    .replace(/[\s_-]/g, '');
+  const tiers = {
+    '1': 'regular', regular: 'regular', normal: 'regular',
+    '2': 'vip', vip: 'vip',
+    '3': 'megavip', megavip: 'megavip',
+    '4': 'ultravip', ultravip: 'ultravip'
+  };
+  return tiers[normalized] || null;
+}
 
 const pendingAttempts = [];
 const registrationSessions = new Map();
@@ -93,6 +118,11 @@ async function initializeDatabase() {
   `);
 
   await pool.query(`
+    ALTER TABLE botcooldown_devices
+    ADD COLUMN IF NOT EXISTS kpass_tier TEXT NOT NULL DEFAULT 'regular'
+  `);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS botcooldown_events (
       id BIGSERIAL PRIMARY KEY,
       discord_user_id TEXT NOT NULL,
@@ -101,6 +131,17 @@ async function initializeDatabase() {
       started_at BIGINT NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
+  `);
+
+  await pool.query(`
+    ALTER TABLE botcooldown_events
+    ADD COLUMN IF NOT EXISTS source_message_id TEXT
+  `);
+
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_botcooldown_events_source_message
+    ON botcooldown_events (source_message_id)
+    WHERE source_message_id IS NOT NULL
   `);
 
   await pool.query(`
@@ -148,6 +189,7 @@ async function handleDirectMessage(message) {
       '🤖 **BotCooldown - Ayuda**\n\n' +
       '• `b!register`: vincular tu cuenta con la aplicación.\n' +
       '• `b!unlink`: desvincular tu cuenta.\n' +
+      '• `b!vip`: consultar o cambiar tu K-PASS.\n' +
       '• `b!help`: mostrar esta ayuda.\n\n' +
       'Para vincularte, primero solicita un código desde la aplicación y después envía `b!register` aquí.'
     );
@@ -155,7 +197,7 @@ async function handleDirectMessage(message) {
   }
 
   if (content.toLowerCase() === 'b!register') {
-    registrationSessions.set(userId, Date.now());
+    registrationSessions.set(userId, { step: 'code', startedAt: Date.now() });
 
     await message.reply(
       '🔗 **Vinculación con BotCooldown**\n\n' +
@@ -177,15 +219,55 @@ async function handleDirectMessage(message) {
     return;
   }
 
-  if (content.toLowerCase() === 'cancelar') {
-    registrationSessions.delete(userId);
-    await message.reply('Vinculación cancelada.');
+  if (content.toLowerCase() === 'b!vip') {
+    const linkedAccount = await pool.query(`
+      SELECT kpass_tier FROM botcooldown_devices
+      WHERE discord_user_id = $1
+    `, [userId]);
+
+    if (linkedAccount.rowCount === 0) {
+      await message.reply('Primero vincula tu cuenta con BotCooldown usando `b!register`.');
+      return;
+    }
+    registrationSessions.set(userId, { step: 'tier', startedAt: Date.now() });
+    await message.reply(
+      '💳 **Selecciona tu K-PASS actual**\n\n' +
+      '1️⃣ Regular (sin VIP)\n2️⃣ VIP\n3️⃣ MEGAVIP\n4️⃣ ULTRAVIP\n\n' +
+      'Responde con el número o el nombre del nivel. Escribe `cancelar` para salir.'
+    );
     return;
   }
 
-  if (!registrationSessions.has(userId)) {
+  if (content.toLowerCase() === 'cancelar') {
+    registrationSessions.delete(userId);
+    await message.reply('Proceso cancelado. Si ya vinculaste tu cuenta, seguirá vinculada.');
     return;
   }
+
+  const session = registrationSessions.get(userId);
+
+  if (session && session.step === 'tier') {
+    const tier = normalizeKPassTier(content);
+    if (!tier) {
+      await message.reply('No reconocí ese nivel. Responde 1 (Regular), 2 (VIP), 3 (MEGAVIP) o 4 (ULTRAVIP).');
+      return;
+    }
+
+    await pool.query(`
+      UPDATE botcooldown_devices SET kpass_tier = $1
+      WHERE discord_user_id = $2
+    `, [tier, userId]);
+
+    registrationSessions.delete(userId);
+    const labels = { regular: 'Regular', vip: 'VIP', megavip: 'MEGAVIP', ultravip: 'ULTRAVIP' };
+    await message.reply(
+      '✅ Tu K-PASS quedó configurado como **' + labels[tier] + '**.\n' +
+      'Los próximos temporizadores usarán los enfriamientos correspondientes. Los que ya están activos no cambiarán.'
+    );
+    return;
+  }
+
+  if (!session || session.step !== 'code') return;
 
   const normalizedCode = content.toUpperCase().replace(/\s/g, '');
 
@@ -248,12 +330,14 @@ async function handleDirectMessage(message) {
 
     await client.query('COMMIT');
 
-    registrationSessions.delete(userId);
+    registrationSessions.set(userId, { step: 'tier', startedAt: Date.now() });
 
     await message.reply(
       '✅ **¡Cuenta vinculada correctamente!**\n\n' +
-      'BotCooldown ya puede recibir tus temporizadores.\n' +
-      'Puedes cerrar esta conversación y volver a la aplicación.'
+      'BotCooldown ya puede recibir tus temporizadores.\n\n' +
+      'Ahora selecciona tu K-PASS actual:\n' +
+      '1️⃣ Regular (sin VIP)\n2️⃣ VIP\n3️⃣ MEGAVIP\n4️⃣ ULTRAVIP\n\n' +
+      'Responde con el número o el nombre del nivel. Si no eliges uno, se mantendrá Regular por defecto.'
     );
 
   } catch (error) {
@@ -270,21 +354,14 @@ client.on('messageCreate', async (message) => {
     if (message.author.bot) {
       const text = getMessageText(message);
 
-      const rejected =
-        text.includes('you already claimed') ||
-        text.includes('you already received') ||
-        text.includes('you have already received') ||
-        text.includes('you have already placed') ||
-        text.includes('you recently received') ||
-        text.includes("you've already claimed") ||
-        (text.includes('please wait') &&
-          text.includes('before using more commands'));
+      const rejected = isRejectedCooldownMessage(text);
 
       if (rejected) {
-        const index = pendingAttempts.findLastIndex(
-          attempt =>
-            attempt.channelId === message.channelId &&
-            Date.now() - attempt.startedAt < rejectionWindowMs
+        const index = findRejectedAttemptIndex(
+          pendingAttempts,
+          message,
+          Date.now(),
+          rejectionWindowMs
         );
 
         if (index !== -1) {
@@ -292,7 +369,11 @@ client.on('messageCreate', async (message) => {
           clearTimeout(attempt.timeout);
 
           console.log(
-            `Cooldown rechazado para ${attempt.command}. No se registra.`
+            `Cooldown rechazado para ${attempt.command} de Discord ${attempt.discordUserId}. No se registra.`
+          );
+        } else {
+          console.warn(
+            `Respuesta de rechazo ambigua en canal ${message.channelId}; no se cancela ningún intento para evitar afectar a otro usuario.`
           );
         }
       }
@@ -305,7 +386,7 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    const command = message.content.trim().toLowerCase();
+    const command = normalizeCooldownCommand(message.content);
 
     // Comando secreto de prueba, exclusivo del creador.
     if (command.startsWith('b!testcooldown')) {
@@ -345,13 +426,17 @@ client.on('messageCreate', async (message) => {
 
       await pool.query(`
         INSERT INTO botcooldown_events
-          (discord_user_id, command, duration, started_at)
-        VALUES ($1, $2, $3, $4)
+          (discord_user_id, command, duration, started_at, source_message_id)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (source_message_id)
+          WHERE source_message_id IS NOT NULL
+        DO NOTHING
       `, [
         OWNER_DISCORD_ID,
         'b!testcooldown',
         duration,
-        startedAt
+        startedAt,
+        message.id
       ]);
 
       await message.reply(
@@ -365,25 +450,25 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    const duration = cooldowns[command];
-
-    if (!duration) return;
-
+    if (!cooldowns[command]) return;
     const linked = await pool.query(`
-      SELECT discord_user_id
+      SELECT discord_user_id, kpass_tier
       FROM botcooldown_devices
       WHERE discord_user_id = $1
     `, [message.author.id]);
 
-    if (linked.rowCount === 0) {
-      return;
-    }
+    if (linked.rowCount === 0) return;
+
+    const tier = linked.rows[0].kpass_tier || 'regular';
+    const duration = getCooldownDuration(command, tier);
+    if (!duration) return;
 
     const attempt = {
       command,
       duration,
       startedAt: Date.now(),
       channelId: message.channelId,
+      messageId: message.id,
       discordUserId: message.author.id,
       timeout: null
     };
@@ -399,13 +484,17 @@ client.on('messageCreate', async (message) => {
       try {
         await pool.query(`
           INSERT INTO botcooldown_events
-            (discord_user_id, command, duration, started_at)
-          VALUES ($1, $2, $3, $4)
+            (discord_user_id, command, duration, started_at, source_message_id)
+          VALUES ($1, $2, $3, $4, $5)
+          ON CONFLICT (source_message_id)
+            WHERE source_message_id IS NOT NULL
+          DO NOTHING
         `, [
           attempt.discordUserId,
           attempt.command,
           attempt.duration,
-          attempt.startedAt
+          attempt.startedAt,
+          attempt.messageId
         ]);
 
         console.log(
@@ -432,32 +521,49 @@ app.post('/link/request', async (req, res) => {
       return res.status(400).json({ error: 'Datos de instalación inválidos.' });
     }
 
+    const installationSecretHash = hash(installationSecret);
     const existing = await pool.query(`
-      SELECT discord_user_id
+      SELECT installation_secret_hash, discord_user_id
       FROM botcooldown_devices
       WHERE installation_id = $1
     `, [installationId]);
 
-    if (existing.rowCount > 0 && existing.rows[0].discord_user_id) {
-      return res.status(409).json({
-        error: 'Esta instalación ya está vinculada. Desvincúlala primero.'
-      });
+    if (existing.rowCount > 0) {
+      if (existing.rows[0].discord_user_id) {
+        return res.status(409).json({
+          error: 'Esta instalación ya está vinculada. Desvincúlala primero.'
+        });
+      }
+
+      if (existing.rows[0].installation_secret_hash !== installationSecretHash) {
+        return res.status(403).json({
+          error: 'El secreto de esta instalación no coincide. No se puede reclamar esta instalación.'
+        });
+      }
     }
 
     const code = generateCode();
     const codeHash = hash(code.replace('-', ''));
     const expiresAt = Date.now() + linkCodeLifetimeMs;
 
-    await pool.query(`
+    const registered = await pool.query(`
       INSERT INTO botcooldown_devices
         (installation_id, installation_secret_hash, link_code_hash, code_expires_at)
       VALUES ($1, $2, $3, $4)
       ON CONFLICT (installation_id)
       DO UPDATE SET
-        installation_secret_hash = EXCLUDED.installation_secret_hash,
         link_code_hash = EXCLUDED.link_code_hash,
         code_expires_at = EXCLUDED.code_expires_at
-    `, [installationId, hash(installationSecret), codeHash, expiresAt]);
+      WHERE botcooldown_devices.installation_secret_hash = EXCLUDED.installation_secret_hash
+        AND botcooldown_devices.discord_user_id IS NULL
+      RETURNING installation_id
+    `, [installationId, installationSecretHash, codeHash, expiresAt]);
+
+    if (registered.rowCount === 0) {
+      return res.status(409).json({
+        error: 'La instalación cambió o fue vinculada durante la solicitud. Vuelve a intentarlo.'
+      });
+    }
 
     res.json({
       code,
@@ -586,7 +692,6 @@ app.get('/events', authenticate, async (req, res) => {
     res.status(500).json({ error: 'No se pudieron consultar los eventos.' });
   }
 });
-
 // Eliminar un evento sincronizado sin que vuelva a aparecer.
 app.delete('/events/:id', authenticate, async (req, res) => {
   try {
