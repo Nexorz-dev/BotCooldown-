@@ -6,6 +6,8 @@ on:
   push:
     branches:
       - main
+      - fix/persistent-synced-cooldown-notifications
+      - integration/combine-main-with-persistent-patch
 
 permissions:
   contents: read

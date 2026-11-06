@@ -1,0 +1,41 @@
+name: Backend multi-user regression tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix/render-multiuser-event-isolation
+      - fix/persistent-synced-cooldown-notifications
+      - integration/combine-main-with-persistent-patch
+    paths:
+      - 'bot/**'
+      - '.github/workflows/backend-tests.yml'
+  pull_request:
+    branches:
+      - fix/persistent-synced-cooldown-notifications
+    paths:
+      - 'bot/**'
+      - '.github/workflows/backend-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  backend-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bot
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm install --no-package-lock
+      - name: Check JavaScript syntax
+        run: npm run check
+      - name: Run multi-user regression tests
+        run: npm test
